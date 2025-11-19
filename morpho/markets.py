@@ -15,7 +15,7 @@ from utils.chains import Chain
 from utils.telegram import send_telegram_message
 
 # Configuration constants
-API_URL = "https://blue-api.morpho.org/graphql"
+API_URL = "https://api.morpho.org/graphql"
 MORPHO_URL = "https://app.morpho.org"
 PROTOCOL = "MORPHO"
 BAD_DEBT_RATIO = 0.005  # 0.5% of total borrowed tvl
@@ -40,7 +40,7 @@ VAULTS_BY_CHAIN = {
         ["Gauntlet WBTC Core", "0x443df5eEE3196e9b2Dd77CaBd3eA76C3dee8f9b2", 3],
         ["Gauntlet USDC Core", "0x8eB67A509616cd6A7c1B3c8C21D48FF57df3d458", 4],
         ["Gauntlet WETH Core", "0x4881Ef0BF6d2365D3dd6499ccd7532bcdBCE0658", 4],
-        ["MEV Capital USDC", "0xd63070114470f685b75B74D60EEc7c1113d33a3D", 4],
+        ["MEV Capital USDC", "0xd63070114470f685b75B74D60EEc7c1113d33a3D", 5],
         # Vault Bridge for Katana Chain
         ["Vault Bridge USDC", "0xBEefb9f61CC44895d8AEc381373555a64191A9c4", 1],
         ["Vault Bridge USDT", "0xc54b4E08C1Dcc199fdd35c6b5Ab589ffD3428a8d", 1],
@@ -67,28 +67,63 @@ VAULTS_BY_CHAIN = {
         ["Yearn OG USDC", "0xCE2b8e464Fc7b5E58710C24b7e5EBFB6027f29D7", 1],
         ["Yearn OG USDT", "0x8ED68f91AfbE5871dCE31ae007a936ebE8511d47", 1],
         ["Yearn OG WBTC", "0xe107cCdeb8e20E499545C813f98Cc90619b29859", 1],
-        ["Gauntlet USDC", "0xE4248e2105508FcBad3fe95691551d1AF14015f7", 1],
-        ["SteakhouseHigh Yield USDC", "0x1445A01a57D7B7663CfD7B4EE0a8Ec03B379aabD", 2],
+        ["Gauntlet USDC", "0xE4248e2105508FcBad3fe95691551d1AF14015f7", 2],
+        ["SteakhouseHigh Yield USDC", "0x1445A01a57D7B7663CfD7B4EE0a8Ec03B379aabD", 1],
         ["Gauntlet USDT", "0x1ecDC3F2B5E90bfB55fF45a7476FF98A8957388E", 1],
         ["SteakhousePrime USDC", "0x61D4F9D3797BA4dA152238c53a6f93Fb665C3c1d", 1],
         ["Gauntlet WETH", "0xC5e7AB07030305fc925175b25B93b285d40dCdFf", 1],
+        ["Gauntlet WBTC", "0xf243523996ADbb273F0B237B53f30017C4364bBC", 1],
+        ["SteakhousePrime AUSD", "0x82c4C641CCc38719ae1f0FBd16A64808d838fDfD", 1],
+        ["Gauntlet AUSD", "0x9540441C503D763094921dbE4f13268E6d1d3B56", 1],
     ],
 }
 
 # Morpho Vaults that are used by Yearn Strategies which are used as YV collateral in Morpho Markets
-VAULTS_WITH_YV_COLLATERAL = {
-    Chain.KATANA: [
-        ["Yearn OG USDC", "0xCE2b8e464Fc7b5E58710C24b7e5EBFB6027f29D7"],
-        ["SteakhousePrime USDC", "0x61D4F9D3797BA4dA152238c53a6f93Fb665C3c1d"],
-        ["Gauntlet USDC", "0xE4248e2105508FcBad3fe95691551d1AF14015f7"],
-        ["Yearn OG USDT", "0xCE2b8e464Fc7b5E58710C24b7e5EBFB6027f29D7"],
-        ["Gauntlet USDT", "0x1ecDC3F2B5E90bfB55fF45a7476FF98A8957388E"],
-        ["Gauntlet WETH", "0xEA79C91540C7E884e6E0069Ce036E52f7BbB1194"],
-        ["Yearn OG WETH", "0x37a79Bfb9F645F8Ed0a9ead9c722710D8f47C431"],
-        ["Yearn OG WBTC", "0xe107cCdeb8e20E499545C813f98Cc90619b29859"],
-        ["Gauntlet WBTC", "0xf243523996ADbb273F0B237B53f30017C4364bBC"],
-    ],
+# Organized by asset address for easier grouping and management
+VAULTS_WITH_YV_COLLATERAL_BY_ASSET = {
+    Chain.MAINNET: {
+        # USDC vaults
+        "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48": [
+            ["OEV USDC", "0x68Aea7b82Df6CcdF76235D46445Ed83f85F845A3"],
+            ["SteakhousePrime USDC", "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB"],
+            ["Gauntlet USDC Prime", "0xdd0f28e19C1780eb6396170735D45153D261490d"],
+        ],
+        # WETH vaults
+        "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2": [
+            ["Gauntlet WETH Prime", "0x2371e134e3455e0593363cBF89d3b6cf53740618"],
+        ],
+    },
+    Chain.KATANA: {
+        # USDC vaults - using addresses from VAULTS_BY_CHAIN as source of truth
+        "0x203A662b0BD271A6ed5a60EdFbd04bFce608FD36": [  # USDC asset address on Katana
+            ["Yearn OG USDC", "0xCE2b8e464Fc7b5E58710C24b7e5EBFB6027f29D7"],
+            ["SteakhousePrime USDC", "0x61D4F9D3797BA4dA152238c53a6f93Fb665C3c1d"],
+            ["SteakhouseHigh Yield USDC", "0x1445A01a57D7B7663CfD7B4EE0a8Ec03B379aabD"],
+            ["Gauntlet USDC", "0xE4248e2105508FcBad3fe95691551d1AF14015f7"],
+        ],
+        # USDT vaults - using addresses from VAULTS_BY_CHAIN as source of truth
+        "0x2DCa96907fde857dd3D816880A0df407eeB2D2F2": [  # USDT asset address on Katana
+            ["Yearn OG USDT", "0x8ED68f91AfbE5871dCE31ae007a936ebE8511d47"],  # Corrected from VAULTS_BY_CHAIN
+            ["Gauntlet USDT", "0x1ecDC3F2B5E90bfB55fF45a7476FF98A8957388E"],
+        ],
+        # WETH vaults - using addresses from VAULTS_BY_CHAIN as source of truth
+        "0xEE7D8BCFb72bC1880D0Cf19822eB0A2e6577aB62": [  # WETH asset address on Katana
+            ["Gauntlet WETH", "0xC5e7AB07030305fc925175b25B93b285d40dCdFf"],  # Corrected from VAULTS_BY_CHAIN
+            ["Yearn OG WETH", "0xFaDe0C546f44e33C134c4036207B314AC643dc2E"],
+        ],
+        # WBTC vaults - using addresses from VAULTS_BY_CHAIN as source of truth
+        "0x0913DA6Da4b42f538B445599b46Bb4622342Cf52": [  # WBTC asset address on Katana
+            ["Yearn OG WBTC", "0xe107cCdeb8e20E499545C813f98Cc90619b29859"],
+            ["Gauntlet WBTC", "0xf243523996ADbb273F0B237B53f30017C4364bBC"],
+        ],
+        # AUSD vaults - using addresses from VAULTS_BY_CHAIN as source of truth
+        "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a": [  # AUSD asset address on Katana
+            ["SteakhousePrime AUSD", "0x82c4C641CCc38719ae1f0FBd16A64808d838fDfD"],
+            ["Gauntlet AUSD", "0x9540441C503D763094921dbE4f13268E6d1d3B56"],
+        ],
+    },
 }
+
 
 MARKETS_RISK_1 = {
     Chain.MAINNET: [
@@ -108,6 +143,7 @@ MARKETS_RISK_1 = {
         "0x1ca7ff6b26581fe3155f391f3960d32a033b5f7d537b1f1932b2021a6cf4f706",  # sDAI/USDT -> lltv 94.5%, oracle: sDAI vault, chainlink DAI/USD and chainlink USDT/USD
         "0xb1eac1c0f3ad13fb45b01beac8458c055c903b1bff8cb882346635996a774f77",  # sDAI / DAI -> lltv 98%, oracle is sDAI vault
         "0x37e7484d642d90f14451f1910ba4b7b8e4c3ccdd0ec28f8b2bdb35479e472ba7",  # weETH/WETH -> lltv 94.5%, oracle: origami weETH/ETH which calls WEETH.getRate(). Alike assets.
+        "0x45671fb8d5dea1c4fbca0b8548ad742f6643300eeb8dbd34ad64a658b2b05bca",  # cbBTC/USDT -> lltv 86%, oracle: chainlink BTC/USD, hardcoded USDT=USD.
     ],
     Chain.BASE: [
         "0x7fc498ddcb7707d6f85f6dc81f61edb6dc8d7f1b47a83b55808904790564929a",  # cbETH/EURC
@@ -145,6 +181,13 @@ MARKETS_RISK_1 = {
         "0x6691cdcadd5d23ac68d2c1cf54dc97ab8242d2a888230de411094480252c2ed3",  # yvUSDC/vbUSDT -> lltv 86%, oracle: yvUSDC vault rate. Chainlink USDC/USD and Chainlink USDT/USD
         "0xd4ab732112fa9087c9c3c3566cd25bc78ee7be4f1b8bdfe20d6328debb818656",  # vbWBTC/vbUSDT -> lltv 86%, oracle: Chainlink WBTC/USD
         "0x9e03fc0dc3110daf28bc6bd23b32cb20b150a6da151856ead9540d491069db1c",  # vbETH/vbUSDT -> lltv 86%, oracle: Chainlink ETH/USD
+        "0x08f67ef41398456dbc5ff72d43c8b6f7917abfd01498a9fc6c89dabe6eb78b8c",  # yvvbETH/USDC -> lltv 77%, oracle: yearn vault exchange rate. Chainlink ETH/USD and Chainlink USDC/USD.
+        "0x3a22063bd258f3f75e3135cac4ec53435dfa5b47b3d5173bb8fd5278e6c1b305",  # yvvbWBTC/USDC -> lltv 77%, oracle: yearn vault exchange rate. Chainlink WBTC/BTC, Chainlink BTC/USD and Chainlink USDC/USD.
+        "0xcfac40b9f06194a33d9526f73642f6849b908c2b6d8669ad9d2d4a3e7dcb017a",  # yvAUSD/USDC -> lltv 86%, oracle: yearn vault exchange rate. Chainlink AUSD/USD and Chainlink USDC/USD.
+        "0xbeb2f6ad6de1a9eead3302ad57a0180f67d127a22e53fa29bc724147b96cb20d",  # WBTC/AUSD -> lltv 86%, oracle: Chainlink WBTC/BTC, Chainlink BTC/USD and Chainlink AUSD/USD.
+        "0x02a77b251cb27b04b5ddab89c852bdc77ee85d359c082170389001d71571a967",  # vbWETH/AUSD -> lltv 86%, oracle: Chainlink ETH/USD and Chainlink AUSD/USD.
+        "0x0c909f9c866c4250cb2f15ef916b1eed5b1022b34ccd7ca947810011f5758c4f",  # BTCK/AUSD -> lltv 86%, oracle: RedStone Price Feed for BTC. USD=AUSD.
+        "0xa6ce59291d90ae348b2fa956cc66f31df605a3304a9325e494c94e2cf5b0485a",  # weETH/vbUSDT -> lltv 77%, oracle: RedStone weETH/ETH fundamental price, Chainlink ETH/USD and Chainlink USDT/USD.
     ],
 }
 
@@ -166,7 +209,6 @@ MARKETS_RISK_2 = {
         "0x8e6aeb10c401de3279ac79b4b2ea15fc94b7d9cfc098d6c2a1ff7b2b26d9d02c",  # USDe / DAI -> lltv 91.5%, same value asset but using hardcoded oracle
         "0xc581c5f70bd1afa283eed57d1418c6432cbff1d862f94eaf58fdd4e46afbb67f",  # USDe / USDC -> lltv 86%, same value asset but using hardcoded oracle
         "0x5f8a138ba332398a9116910f4d5e5dcd9b207024c5290ce5bc87bc2dbd8e4a86",  # ETH+/WETH -> lltv 94.5%, oracle: ETH+ / USD exchange rate adapter and Chainlink: ETH/USD. ETH+ token has monitoring.
-        "0xbc552f0b14dd6f8e60b760a534ac1d8613d3539153b4d9675d697e048f2edc7e",  # PT-sUSDE-31JUL2025 / USDC -> lltv 91.5%, oracle: Pendle PT exchange rate(PT to asset) sUSDE. No price oracle for USDC, USDe = USDC.
         "0x85ab69d50add7daa0934b5224889af0a882f2e3b4572d82c771dd0875f4eaa9b",  # pufETH/WETH -> lltv 94.5%, oracle: pufETH vault exchange rate. Alike assets.
         "0xbf02d6c6852fa0b8247d5514d0c91e6c1fbde9a168ac3fd2033028b5ee5ce6d0",  # LBTC/USDC -> lltv 86%, oracle: Redstone LBTC / BTC Redstone redemption price feed and Chainlink BTC/USD. More info on LBTC/BTC: https://docs.redstone.finance/docs/data/lombard/#how-redstone-delivers-lbtcbtc-fundamental-price
         "0xf6a056627a51e511ec7f48332421432ea6971fc148d8f3c451e14ea108026549",  # LBTC/WBTC -> lltv 94.5%, oracle: readstone exchange rate LBTC/BTC and chainlink WBTC/BTC
@@ -176,6 +218,10 @@ MARKETS_RISK_2 = {
         "0x7a5d67805cb78fad2596899e0c83719ba89df353b931582eb7d3041fd5a06dc8",  # PT-USDe-25SEP2025/USDC -> lltv 91.5%, oracle: Steakhouse oracle with backup oracle. Main oracle is Pendle PT exchange rate(PT to asset) USDe. Backup oracle is Pendle PT and Chainlink USDe/USD.
         "0x3e37bd6e02277f15f93cd7534ce039e60d19d9298f4d1bc6a3a4f7bf64de0a1c",  # PT-sUSDE-25SEP2025/USDC -> lltv 91.5%, oracle: Steakhouse oracle with backup oracle. Main oracle is Pendle PT exchange rate(PT to asset) sUSDe. Backup oracle is Pendle PT and Chainlink sUSDe/USD.
         "0x45d97c66db5e803b9446802702f087d4293a2f74b370105dc3a88a278bf6bb21",  # PT-USDe-25SEP2025/DAI -> lltv 91.5%, oracle: PendlePT with LinearDiscountOracle. No price oracle for DAI, USDe = DAI.
+        "0x05702edf1c4709808b62fe65a7d082dccc9386f858ae460ef207ec8dd1debfa2",  # PT-sUSDE-27NOV2025/USDC -> lltv 91.5%, oracle: Pendle PT exchange rate(PT to asset) sUSDe. No price oracle for USDC, sUSDe = USDC.
+        "0x534e7046c3aebaa0c6c363cdbeb9392fc87af71cc16862479403a198fe04b206",  # PT-USDe-27NOV2025/USDC -> lltv 91.5%, oracle: Pendle PT exchange rate(PT to asset) USDe. No price oracle for USDC, USDe = USDC.
+        "0x550edc2e9fe71158ccfa7c478a31f4e60ef508d94ada3931dc2aee4f666f8f81",  # yvUSDC-1/USDC -> lltv 91.5%, oracle: yvUSDC-1 vault rate.
+        "0x973e9dd45799efe8775417bcc420a3ab84a583587b2108985746e2fe201d0c83",  # YFI/USDC -> lltv 77%, oracle: Chainlink YFI/USD and Chainlink USDC/USD.
     ],
     Chain.BASE: [
         "0x6aa81f51dfc955df598e18006deae56ce907ac02b0b5358705f1a28fcea23cc0",  # wstETH/WETH -> lltv 96.5%, oracle: Chainlink wstETH-stETH Exchange Rate
@@ -193,9 +239,8 @@ MARKETS_RISK_2 = {
         "0xfe6cb1b88d8830a884f2459962f4b96ae6e38416af086b8ae49f5d0f7f9fc0cd",  # POL/vbUSDC -> lltv 77%, oracle: Chainlink POL/USD and Chainlink USDC/USD
         "0xdf0f160d591f02931e44010763f892a51a480257a5ff21c41ebff874b0c7d258",  # BTCK/vbUSDT -> lltv 77%, oracle: Redstone BTC/USD
         "0x0e9d558490ed0cd523681a8c51d171fd5568b04311d0906fec47d668fb55f5d9",  # BTCK/vbUSDC -> lltv 77%, oracle: Redstone BTC/USD
-        "0x16ded80178992b02f7c467c373cfc9f4eee7f0356df672f6a768ec92b2ffdeff",  # yUSD/vbUSDC -> lltv 86%, oracle: yUSD vault rate. yUSD = vbUSDC hardcoded oracle
-        "0x08f67ef41398456dbc5ff72d43c8b6f7917abfd01498a9fc6c89dabe6eb78b8c",  # yvvbETH/USDC -> lltv 77%, oracle: yearn vault exchange rate. Chainlink ETH/USD and Chainlink USDC/USD.
-        "0x3a22063bd258f3f75e3135cac4ec53435dfa5b47b3d5173bb8fd5278e6c1b305",  # yvvbWBTC/USDC -> lltv 77%, oracle: yearn vault exchange rate. Chainlink WBTC/BTC, Chainlink BTC/USD and Chainlink USDC/USD.
+        "0x071ed2047610c7b33e1540e49fcc0a6852cb783cca0dd7dc428f32fd791a020f",  # wstETH/AUSD -> lltv 86%, oracle: RedStone Price Feed for wstETH. USD=AUSD.
+        "0xa7cd449cc319d65be3d0926d6b6f599a8c3434bd95ba3e91bbf1ee5e80e72b56",  # LBTC/vbUSDC -> lltv 86%, oracle: RedStone Price Feed for LBTC_FUNDAMENTAL and RedStone BTC/USD. USD=vbUSDC.
     ],
 }
 
@@ -221,6 +266,8 @@ MARKETS_RISK_3 = {
         "0xfae6c3fca4d2fe61c62d29541e84a728b660a0dbc99217750c1080a8fc7d0e45",  # PT-eUSDE-14AUG2025/USDC -> lltv 91.5%, oracle: Pendle PT exchange rate(PT to asset) eUSDE. No price oracle for USDC, USDe = USDC.
         "0x53ed197357128ed96070e20ba9f5af4250cda6c67dcac5246876beb483f51303",  # sDOLA/USDC -> lltv 91.5%, oracle: sDOLA vault rate. DOLA = USDC hardcoded oracle.
         "0xce68c7aa336675e42bbc8eaa8b5ecc7ebd816bf8625b5316330c6ac2dabc4cf2",  # SolvBTC/BTC -> lltv 94.5%, oracle: upgradeable MetaOracleDeviationTimelock with prime oracle morpho oracle with 1:1 hardcoded rate
+        "0x7a7018e22a8bb2d08112eae9391e09f065a8ae7ae502c1c23dc96c21411a6efd",  # EIGEN/USDC -> lltv 77%, oracle: Redstone EIGEN/USD. USD = USDC.
+        "0xb8afc953c3cc8077b4a4bf459bede8d3f80be45ca1f244e4bca13b7b1030eed5",  # PT-syrupUSDC-30OCT2025/USDC -> lltv 91.5%, oracle: Pendle PT exchange rate(PT to asset) syrupUSDC. syrupUSDC = USDC.
     ],
     Chain.BASE: [
         "0x9a697eb760dd12aaea23699c96ea2ebbfe48b7af64138d92c4d232b9ed380024",  # PT-LBTC-29MAY2025/cbBTC -> lltv 91.5%, oracle: Pendle PT with LinearDiscountOracle. Higher lltv than PT-LBTC-27MAR2025 / WBTC.
@@ -229,6 +276,7 @@ MARKETS_RISK_3 = {
         "0x6a331b22b56c9c0ee32a1a7d6f852d2c682ea8b27a1b0f99a9c484a37a951eb7",  # weETH/USDC -> lltv 77%, oracle: Chainlink weETH / eETH Exchange Rate and Chainlink ETH/USD and Chainlink USDC/USD
         "0x52a2a376586d0775e3e80621facc464f6e96d81c8cb70fd461527dde195a079f",  # LBTC/USDC -> lltv 86%, oracle: RedStone Price Feed for LBTC/BTC  and Chainlink BTC/USD
         "0x30767836635facec1282e6ef4a5981406ed4e72727b3a63a3a72c74e8279a8d7",  # LBTC/cbBTC -> lltv 94.5%, oracle: RedStone Price Feed for LBTC_FUNDAMENTAL: https://app.redstone.finance/app/feeds/base/lbtc_fundamental/
+        "0x0138c47c8f7e0a785ec20a46edc6dc7747c8cd6e318d02f6506a5b6a5f5be7b0",  # PT-LBTC-scaled18-25SEP2025/cbBTC -> lltv 91.5%, oracle: Pendle PT exchange ratePT with TWAP 900s
     ],
     Chain.KATANA: [],
 }
@@ -250,10 +298,11 @@ MARKETS_RISK_4 = {
         "0x4ef32e4877329436968f4a29b0c8285531d113dad29b727d88beafe5ed45be6a",  # PT-sdeUSD-1753142406/USDC -> lltv 91.5%, oracle: PT discounted price, sdeUSD vault rate. Redstone oracle deusd/usd price, 24hour heartbeat, deviation 0.2%. Chainlink USDC/USD.
         "0xbf6687cb042a09451e66ebc11d7716c49fb8ccc75f484f7fab0eed6624bd5838",  # mMEV/USDC -> lltv 91.5%, oracle: Midas price oracle mMEV/USD. More info at: https://docs.midas.app/defi-integration/price-oracle
         "0x83b7ad16905809ea36482f4fbf6cfee9c9f316d128de9a5da1952607d5e4df5e",  # csUSDL/USDC -> lltv 96.5%, oracle: wUSDL / USDL vault rate.
-        "0xbfed072faee09b963949defcdb91094465c34c6c62d798b906274ef3563c9cac",  # srUSD/USDC -> lltv 91.5%, oracle: saving rate module price. rUSD(ripple USD) is underlying asset.
         "0xa3819a7d2aee958ca0e7404137d012b51ea47d051db69d94656956eff8c80c23",  # PT-syrupUSDC-28AUG2025/USDC -> lltv 91.5%, oracle: Pendle PT exchange rate(PT to asset) syrupUSDC.
         "0xe1b65304edd8ceaea9b629df4c3c926a37d1216e27900505c04f14b2ed279f33",  # RLP/USDC -> lltv 86%, oracle: RLP oracle where the price is set manually, but must be in bounds. Owner of the proxy is multisig.
         "0x8b1bc4d682b04a16309a8adf77b35de0c42063a7944016cfc37a79ccac0007b6",  # slvlUSD/USDC -> lltv 91.5%, oracle: slvlUSD vault rate. lvlUSD = USDC
+        "0x8a71a66ac828c2b6d4f8accce5859aba0822b502f3833bec4aff09479affffdb",  # PT-cUSDO-20NOV2025 / USDC -> lltv 91.5%, oracle: Pendle PT exchange rate(PT to asset) cUSDO. cUSDO = USDC.
+        "0x95c28d447950ca6c8bbfd25fc05b80b1fd7a1cdd17a3610b4b3f1ffc8dc2e2ed",  # mHYPER / USDC -> lltv 86%, oracle: MHyperCustomAggregatorFeed
     ],
     Chain.BASE: [
         "0xff0f2bd52ca786a4f8149f96622885e880222d8bed12bbbf5950296be8d03f89",  # USR/USDC -> lltv 91.5%, oracle: pyth USR/USD and qoute pyth USDC/USD
@@ -262,11 +311,16 @@ MARKETS_RISK_4 = {
 }
 
 MARKETS_RISK_5 = {
-    Chain.MAINNET: [],
+    Chain.MAINNET: [
+        "0xbfed072faee09b963949defcdb91094465c34c6c62d798b906274ef3563c9cac",  # srUSD/USDC -> lltv 91.5%, oracle: saving rate module price. rUSD(USD) is underlying asset. rUSD = USDC hardcoded oracle.
+    ],
     Chain.BASE: [
         "0xcf21c3ca9434959fbf882f7d977f90fe22b7a79e6f39cada5702b56b25e58613",  # PT-USR-24APR2025/USDC -> lltv 91.5%, oracle: PendlePT exchange rate(PT to SY) * USR/USD redeption price from pyth. Problem: no USDC/USD quote, only USR/USD conversion.
     ],
-    Chain.KATANA: [],
+    Chain.KATANA: [
+        "0x16ded80178992b02f7c467c373cfc9f4eee7f0356df672f6a768ec92b2ffdeff",  # yUSD/vbUSDC -> lltv 86%, oracle: yUSD vault rate. yUSD = vbUSDC hardcoded oracle
+        "0xd8a93a4cd16f843c385391e208a9a9f2fd75aedfcca05e4810e5fbfcaa6baec6",  #  wsrUSD/vbUSDC -> lltv 91.5%, oracle: API3 wsrUSD/rUSD Exchange Rate, rUSD = vbUSDC
+    ],
 }
 
 # Define base allocation tiers
@@ -393,7 +447,7 @@ def check_high_allocation(vault_data):
         market = allocation["market"]
         unique_key = market["uniqueKey"]
         market_supply = allocation.get("supplyAssetsUsd", 0)
-        allocation_ratio = market_supply / total_assets
+        allocation_ratio = min(market_supply / total_assets, 1.0)  # prevent allocation ratio from exceeding 100%
 
         # Determine market risk level
         if unique_key in MARKETS_RISK_1[chain]:
@@ -439,6 +493,184 @@ def check_high_allocation(vault_data):
         send_telegram_message(message, PROTOCOL)
 
 
+def is_yv_collateral_vault(vault_address: str, chain: Chain) -> bool:
+    """
+    Check if a vault is used as YV collateral by looking in the asset-based config.
+
+    Args:
+        vault_address: Address of the vault to check
+        chain: Chain the vault is on
+
+    Returns:
+        True if vault is used as YV collateral
+    """
+    if chain not in VAULTS_WITH_YV_COLLATERAL_BY_ASSET:
+        return False
+
+    # Check all asset groups for this chain
+    for asset_address, vaults in VAULTS_WITH_YV_COLLATERAL_BY_ASSET[chain].items():
+        for vault_name, vault_addr in vaults:
+            if vault_addr.lower() == vault_address.lower():
+                return True
+
+    return False
+
+
+def get_yv_collateral_vaults_by_asset(chain: Chain) -> Dict[str, List[str]]:
+    """
+    Get YV collateral vaults organized by asset address.
+
+    Args:
+        chain: Chain to get vaults for
+
+    Returns:
+        Dictionary with asset address as key and list of vault addresses as value
+    """
+    result = {}
+
+    if chain not in VAULTS_WITH_YV_COLLATERAL_BY_ASSET:
+        return result
+
+    for asset_address, vaults in VAULTS_WITH_YV_COLLATERAL_BY_ASSET[chain].items():
+        vault_addresses = [vault[1] for vault in vaults]  # Extract addresses from [name, address] pairs
+        result[asset_address.lower()] = vault_addresses
+
+    return result
+
+
+def group_vaults_by_chain(vaults_data: List[Dict[str, Any]]) -> Dict[Chain, List[Dict[str, Any]]]:
+    """Group vaults by their chain."""
+    vaults_by_chain = {}
+    for vault_data in vaults_data:
+        chain = Chain.from_chain_id(vault_data["chain"]["id"])
+        if chain not in vaults_by_chain:
+            vaults_by_chain[chain] = []
+        vaults_by_chain[chain].append(vault_data)
+    return vaults_by_chain
+
+
+def find_yv_vaults_for_asset(
+    chain_vaults: List[Dict[str, Any]], asset_address: str, yv_vault_addresses: List[str]
+) -> List[Dict[str, Any]]:
+    """Find all YV collateral vaults for a specific asset."""
+    asset_yv_vaults = []
+
+    for vault_data in chain_vaults:
+        vault_address = vault_data["address"]
+        vault_asset_address = vault_data.get("asset", {}).get("address", "").lower()
+
+        # Check if this vault is for the current asset and is YV collateral
+        if vault_asset_address == asset_address and vault_address in yv_vault_addresses:
+            asset_yv_vaults.append(vault_data)
+
+    return asset_yv_vaults
+
+
+def calculate_combined_metrics(asset_yv_vaults: List[Dict[str, Any]]) -> tuple[float, float, List[str]]:
+    """Calculate combined total assets, liquidity, and vault names for a group of vaults."""
+    combined_total_assets = 0
+    combined_liquidity = 0
+    vault_names = []
+
+    for vault in asset_yv_vaults:
+        total_assets = vault["state"]["totalAssetsUsd"] or 0
+        liquidity = vault["liquidity"]["usd"] or 0
+
+        # Only include vaults with meaningful assets (>= 10k)
+        if total_assets >= 10_000:
+            combined_total_assets += total_assets
+            combined_liquidity += liquidity
+            vault_names.append(vault["name"])
+
+    return combined_total_assets, combined_liquidity, vault_names
+
+
+def check_combined_liquidity_threshold(
+    asset_symbol: str,
+    chain: Chain,
+    combined_total_assets: float,
+    combined_liquidity: float,
+    vault_names: List[str],
+    vault_count: int,
+) -> None:
+    """Check if combined liquidity meets threshold and send alert if needed."""
+    if combined_total_assets < 10_000:
+        print(
+            f"Skipping {asset_symbol} combined liquidity check: total assets ${combined_total_assets:,.2f} below threshold"
+        )
+        return
+
+    combined_liquidity_ratio = combined_liquidity / combined_total_assets
+
+    print(
+        f"Combined {asset_symbol} liquidity check: {vault_count} vaults on {chain.name}, "
+        f"${combined_total_assets:,.2f} total assets, "
+        f"{combined_liquidity_ratio:.1%} liquidity ratio"
+    )
+
+    if combined_liquidity_ratio < LIQUIDITY_THRESHOLD_YV_COLLATERAL:
+        vault_list = ", ".join(vault_names)
+        message = (
+            f"⚠️ Low combined liquidity detected for {asset_symbol} YV collateral vaults on {chain.name}\n"
+            f"🚨 Combined vaults: {vault_list}\n"
+            f"🚨 Min liquidity is {LIQUIDITY_THRESHOLD_YV_COLLATERAL:.1%} of total assets.\n"
+            f"💰 Combined liquidity: {combined_liquidity_ratio:.1%} of total assets\n"
+            f"💵 Combined liquidity: ${combined_liquidity:,.2f}\n"
+            f"📊 Combined total assets: ${combined_total_assets:,.2f}"
+        )
+        send_telegram_message(message, PROTOCOL)
+
+
+def check_yv_collateral_liquidity_for_chain(chain: Chain, chain_vaults: List[Dict[str, Any]]) -> None:
+    """Check combined liquidity for YV collateral vaults on a specific chain."""
+    yv_vaults_by_asset = get_yv_collateral_vaults_by_asset(chain)
+
+    # Check each asset group for combined liquidity
+    for asset_address, yv_vault_addresses in yv_vaults_by_asset.items():
+        # Find all vaults for this asset that are YV collateral
+        asset_yv_vaults = find_yv_vaults_for_asset(chain_vaults, asset_address, yv_vault_addresses)
+
+        if not asset_yv_vaults:
+            continue
+
+        # Get asset symbol from first vault
+        asset_symbol = asset_yv_vaults[0].get("asset", {}).get("symbol", "UNKNOWN")
+
+        # Calculate combined metrics for this asset
+        combined_total_assets, combined_liquidity, vault_names = calculate_combined_metrics(asset_yv_vaults)
+
+        # Check threshold and alert if needed
+        check_combined_liquidity_threshold(
+            asset_symbol, chain, combined_total_assets, combined_liquidity, vault_names, len(asset_yv_vaults)
+        )
+
+
+def check_individual_liquidity_for_chain(chain: Chain, chain_vaults: List[Dict[str, Any]]) -> None:
+    """Check individual liquidity for non-YV collateral vaults on a specific chain."""
+    for vault_data in chain_vaults:
+        vault_address = vault_data["address"]
+        if not is_yv_collateral_vault(vault_address, chain):
+            check_low_liquidity(vault_data)
+
+
+def check_low_liquidity_combined(vaults_data: List[Dict[str, Any]]) -> None:
+    """
+    Check liquidity for vaults, with special logic for VAULTS_WITH_YV_COLLATERAL_BY_ASSET.
+    For YV collateral vaults, combine all vaults with the same asset and check if
+    the combined liquidity passes the threshold.
+    """
+    # Group vaults by chain for processing
+    vaults_by_chain = group_vaults_by_chain(vaults_data)
+
+    # Process each chain separately
+    for chain, chain_vaults in vaults_by_chain.items():
+        # Check combined liquidity for YV collateral vaults
+        check_yv_collateral_liquidity_for_chain(chain, chain_vaults)
+
+        # Check individual liquidity for non-YV collateral vaults
+        check_individual_liquidity_for_chain(chain, chain_vaults)
+
+
 def check_low_liquidity(vault_data):
     """
     Send telegram message if low liquidity is detected.
@@ -457,22 +689,7 @@ def check_low_liquidity(vault_data):
     liquidity = liquidity or 0
     liquidity_ratio = liquidity / total_assets
 
-    # Check if vault is in VAULTS_WITH_YV_COLLATERAL
-    if chain in VAULTS_WITH_YV_COLLATERAL and vault_data["address"] in [
-        vault[1] for vault in VAULTS_WITH_YV_COLLATERAL[chain]
-    ]:
-        if liquidity_ratio < LIQUIDITY_THRESHOLD_YV_COLLATERAL:
-            message = (
-                f"⚠️ Low liquidity detected in [{vault_name}]({vault_url}) on {chain.name}\n"
-                f"🚨 This vault is being used as YV collateral. Min liquidity is {LIQUIDITY_THRESHOLD_YV_COLLATERAL:.1%} of total assets.\n"
-                f"💰 Liquidity: {liquidity_ratio:.1%} of total assets\n"
-                f"💵 Liquidity: ${liquidity:,.2f}\n"
-                f"📊 Total Assets: ${total_assets:,.2f}"
-            )
-            send_telegram_message(message, PROTOCOL)
-            return
-
-    # standard liquidity check
+    # standard liquidity check (YV collateral vaults are handled separately)
     if liquidity_ratio < LIQUIDITY_THRESHOLD:
         message = (
             f"⚠️ Low liquidity detected in [{vault_name}]({vault_url}) on {chain.name}\n"
@@ -503,6 +720,11 @@ def main() -> None:
                 name
                 chain {
                   id
+                }
+                asset {
+                    address
+                    symbol
+                    name
                 }
                 liquidity {
                   usd
@@ -564,10 +786,10 @@ def main() -> None:
         send_telegram_message("🚨 No vaults data found 🚨", PROTOCOL)
         return
 
-    for vault_data in vaults_data:
-        # Check liquidity
-        check_low_liquidity(vault_data)
+    # Check combined liquidity for all vaults (handles YV collateral grouping)
+    check_low_liquidity_combined(vaults_data)
 
+    for vault_data in vaults_data:
         # Check high allocation for each vault
         check_high_allocation(vault_data)
 

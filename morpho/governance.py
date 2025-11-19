@@ -33,7 +33,7 @@ VAULTS_BY_CHAIN = {
         # ["Gauntlet WBTC Core", "0x443df5eEE3196e9b2Dd77CaBd3eA76C3dee8f9b2"],
         # ["Gauntlet LRT Core", "0x7Db8c75A903d66D669b2002870975cc5aA842b6D"],
         # ["LlamaRisk crvUSD Vault", "0x67315dd969B8Cd3a3520C245837Bf71f54579C75"],
-        # ["Usual Boosted USDC", "0xd63070114470f685b75B74D60EEc7c1113d33a3D"],
+        # ["MEV Capital USDC", "0xd63070114470f685b75B74D60EEc7c1113d33a3D"],
     ],
     Chain.BASE: [
         ["Moonwell Flagship USDC", "0xc1256Ae5FF1cf2719D4937adb3bbCCab2E00A2Ca"],
@@ -56,6 +56,7 @@ VAULTS_BY_CHAIN = {
         ["Gauntlet USDT", "0x1ecDC3F2B5E90bfB55fF45a7476FF98A8957388E"],
         ["Gauntlet WETH", "0xC5e7AB07030305fc925175b25B93b285d40dCdFf"],
         ["Steakhouse Prime USDC", "0x61D4F9D3797BA4dA152238c53a6f93Fb665C3c1d"],
+        ["Steakhouse High Yield USDC", "0x1445A01a57D7B7663CfD7B4EE0a8Ec03B379aabD"],
     ],
 }
 

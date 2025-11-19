@@ -1,5 +1,7 @@
 # SAM Tools
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/yearn/monitoring-scripts-py) [![Hourly Monitoring Scripts](https://github.com/yearn/monitoring-scripts-py/actions/workflows/hourly.yml/badge.svg)](https://github.com/yearn/monitoring-scripts-py/actions/workflows/hourly.yml) [![Daily Monitoring Scripts](https://github.com/yearn/monitoring-scripts-py/actions/workflows/daily.yml/badge.svg)](https://github.com/yearn/monitoring-scripts-py/actions/workflows/daily.yml) [![Safe Multisigs](https://github.com/yearn/monitoring-scripts-py/actions/workflows/multisig-checker.yml/badge.svg)](https://github.com/yearn/monitoring-scripts-py/actions/workflows/multisig-checker.yml)
+
 Monitoring scripts for DeFi protocols to track key metrics and send alerts.
 
 ## Supported Protocols
@@ -8,6 +10,7 @@ Monitoring scripts for DeFi protocols to track key metrics and send alerts.
 - [Compound V3](./compound/README.md)
 - [Ethena](./ethena/README.md)
 - [Euler](./euler/README.md)
+- [Fluid](./fluid/README.md)
 - [Lido](./lido/README.md)
 - [LRTs](./lrt-pegs/README.md)
 - [Maker DAO](./maker/README.md)
@@ -73,3 +76,7 @@ Format and lint code with ruff:
 uv run ruff format .
 uv run ruff check --fix .
 ```
+
+## Details
+
+For more details about this repository, check out AI generated docs using DeepWiki at [https://deepwiki.com/yearn/monitoring-scripts-py](https://deepwiki.com/yearn/monitoring-scripts-py).

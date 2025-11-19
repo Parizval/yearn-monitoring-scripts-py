@@ -57,14 +57,11 @@ MARKETS_RISK_2 = {
     Chain.POLYGON: [
         "0x41e537c46cc0e2f82aa69107cd72573f585602d8c33c9b440e08eaba5e8fded1",  # MATICX/USDT -> lltv 77%, oracle: Chainlink Calculated MaticX / USD, but there is no oracle for USDT/USD. Maticx has liquidity around 7M without slippage, around 1.7M USD. Withdrawing Matic will take 90 checkpoints (2-3 days) as per Polygon's native unstaking
         "0x1947267c49c3629c5ed59c88c411e8cf28c4d2afdb5da046dc8e3846a4761794",  # MATICX/USDC -> lltv 77%, oracle: Chainlink Calculated MaticX / USD, but there is no oracle for USDC/USD. Maticx has liquidity around 7M without slippage, around 1.7M USD. Withdrawing Matic will take 90 checkpoints (2-3 days) as per Polygon's native unstaking
-    ],
-}
-
-MARKETS_RISK_3 = {
-    Chain.POLYGON: [
         "0x8513df298cab92cafba1bae394420b7150aa40a5fac649c7168404bd5174a54c",  # sACRED/USDC -> lltv 86%, oracle: Redstone ACRED/USD which is connect only to securitize-api. Using vault conversion rate for sACRED/ACRED
     ],
 }
+
+MARKETS_RISK_3 = {Chain.POLYGON: []}
 
 MARKETS_RISK_4 = {Chain.POLYGON: []}
 
@@ -81,7 +78,7 @@ ALLOCATION_TIERS = {
 
 # Define max risk thresholds by risk level
 MAX_RISK_THRESHOLDS = {
-    1: 1.20,  # Risk tier 1 max total risk
+    1: 1.30,  # Risk tier 1 max total risk
     2: 2.30,  # Risk tier 2 max total risk
     3: 3.40,  # Risk tier 3 max total risk
     4: 4.50,  # Risk tier 4 max total risk
