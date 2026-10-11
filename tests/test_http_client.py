@@ -1,6 +1,7 @@
 """Tests for shared HTTP retry behavior."""
 
 from collections.abc import Iterator
+from unittest.mock import Mock
 
 import pytest
 import requests
@@ -78,6 +79,9 @@ def test_request_with_retry_does_not_retry_permanent_client_error(
 
     monkeypatch.setattr(http_client.requests, "request", request)
 
+    log_error = Mock()
+    monkeypatch.setattr(http_client.logger, "error", log_error)
+
     with pytest.raises(requests.HTTPError):
         http_client.request_with_retry(
             "get",
@@ -88,6 +92,7 @@ def test_request_with_retry_does_not_retry_permanent_client_error(
         )
 
     assert len(calls) == 1
+    log_error.assert_called()
 
 
 def test_request_with_retry_stops_after_rate_limit_retry_budget(
