@@ -188,7 +188,10 @@ protocols:
       - name: "Junior TVL Coverage"
         description: "Junior TVL <50% of risky farm exposure; re-armed after a monitoring gap >3 hours"
       - name: "L2 Vault Reports"
-        description: "Per-chain L2 vault value falls >50% since the last stored reading, differs >25% from the API's L2 farm value, or no assets update for >48h while holding >$10k"
+        description: >-
+          Finalized assets update books a farm-share value loss >50% and at least $10k,
+          or assets update stale >48h with at least $10k mirrored value. Liquidity
+          transfers alone do not trigger loss alerts.
       - name: "Timelock"
         description: "Longtimelock and Shorttimelock events via Envio"
 

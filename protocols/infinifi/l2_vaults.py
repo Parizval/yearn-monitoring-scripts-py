@@ -1,26 +1,30 @@
 """Watch the value each infiniFi L2 vault (OutlandVault) reports for its chain.
 
 An OutlandVault on mainnet mirrors infiniFi's deposits on one L2. Its value
-(``portalAssetsReport().totalAssetsValue``) only changes when an assets-update
-message is executed, and executing one mints or burns the vault's farm shares,
-booking the change as profit or loss on mainnet. Messages normally arrive over
-the bridge, but governance can inject any message with ``Connector.govReceive``:
-on 23/09/2026 an injected all-zero update wrote the old Base vault down to 0.
+(``portalAssetsReport().totalAssetsValue``) is the vault's farm shares minus its
+current local liquidity. Assets updates reconcile the farm shares and can book
+profit or loss; token transfers also change the reported value as local
+liquidity moves. Only assets updates refresh ``lastPortalUpdate``. Messages
+normally arrive over the bridge, but governance can inject any message with
+``Connector.govReceive``: on 23/09/2026 an injected all-zero update wrote the old
+Base vault down to 0.
 
 For every chain the PortalHub lists, this script alerts (MEDIUM) when:
 
-- the vault's value falls by more than ``INFINIFI_L2_VAULT_DROP_THRESHOLD``
-  (default 50%) since the last stored reading, however old, including a fall to
-  0, and the fall is at least ``INFINIFI_L2_VAULT_MIN_VALUE`` USD (default 10,000);
+- an executed assets update books a farm-share value loss exceeding
+  ``INFINIFI_L2_VAULT_DROP_THRESHOLD`` (default 50%), including a fall to 0,
+  and at least ``INFINIFI_L2_VAULT_MIN_VALUE`` USD (default 10,000);
 - the vault has not received a report for ``INFINIFI_L2_VAULT_STALE_HOURS``
-  (default 48h) while it holds at least the minimum value;
-- the value mainnet has booked differs from what infiniFi's API shows on the L2
-  (its ``isL2LiquidityFarm`` farms for that chain) by more than
-  ``INFINIFI_L2_VAULT_MISMATCH_THRESHOLD`` (default 25%) and the minimum value.
-  This catches a wrong or injected report directly, without waiting for a drop.
+  (default 48h) while it holds at least the minimum value.
 
-The baseline is keyed by vault address, so a planned migration, where the hub
-is pointed at a new vault, starts a fresh baseline and does not alert.
+The monitor uses only mainnet reads. Comparing the mirrored value with L2 farm
+totals produces false mismatches while outbound transfers await settlement,
+even when both totals are read on-chain.
+
+Reads and event cursors use finalized Ethereum blocks. The first reading of a
+vault initializes its cursor; subsequent runs inspect every assets update since
+that cursor, including across monitoring gaps. Token transfers never serve as
+loss baselines. Cursors are keyed by vault address, so migrations start fresh.
 """
 
 from dataclasses import dataclass
@@ -33,14 +37,12 @@ from utils.alert import Alert, AlertSeverity, send_alert
 from utils.cache import (
     HOURLY_CACHE_STALE_AFTER_SECONDS,
     cache_filename,
-    cache_timestamp_key,
     get_fresh_last_value_for_key_from_file,
     get_last_value_for_key_from_file,
     write_last_value_with_timestamp_to_file,
 )
 from utils.chains import Chain
 from utils.config import Config
-from utils.http_client import fetch_json
 from utils.logger import get_logger
 from utils.web3_wrapper import ChainManager, Web3Client
 
@@ -53,11 +55,7 @@ EXPLORER = "https://etherscan.io/address"
 DROP_THRESHOLD = Decimal(Config.get_env("INFINIFI_L2_VAULT_DROP_THRESHOLD", "0.5") or "0.5")
 MIN_VALUE = Decimal(Config.get_env("INFINIFI_L2_VAULT_MIN_VALUE", "10000") or "10000")
 STALE_HOURS = Config.get_env_int("INFINIFI_L2_VAULT_STALE_HOURS", 48)
-MISMATCH_THRESHOLD = Decimal(Config.get_env("INFINIFI_L2_VAULT_MISMATCH_THRESHOLD", "0.25") or "0.25")
-
-API_URL = "https://api.infinifi.xyz/api/protocol/data"
-# The API names farm chains; Monad is not in utils.chains.Chain.
-API_CHAIN_IDS = {"BASE": 8453, "MONAD": 143}
+LOG_BLOCK_RANGE = 2000
 
 _HUB_ABI = [
     {
@@ -82,7 +80,17 @@ _VAULT_ABI = [
         "stateMutability": "view",
         "inputs": [],
         "outputs": [{"name": "", "type": "uint256"} for _ in range(4)],
-    }
+    },
+    {
+        "name": "PortalUpdate",
+        "type": "event",
+        "anonymous": False,
+        "inputs": [
+            {"name": "timestamp", "type": "uint256", "indexed": True},
+            {"name": "oldAssets", "type": "uint256", "indexed": False},
+            {"name": "newAssets", "type": "uint256", "indexed": False},
+        ],
+    },
 ]
 
 
@@ -94,6 +102,16 @@ class VaultReport:
     vault: str
     value: Decimal  # USD, from 18 decimals
     last_update: int  # unix seconds of the last executed assets update
+
+
+@dataclass(frozen=True)
+class VaultUpdate:
+    """The farm-share value change booked by one executed assets update."""
+
+    timestamp: int
+    previous_value: Decimal
+    value: Decimal
+    transaction_hash: str
 
 
 def _link(address: str) -> str:
@@ -111,71 +129,81 @@ def _time(timestamp: int) -> str:
     return datetime.fromtimestamp(timestamp, UTC).strftime("%d/%m/%Y %H:%M UTC")
 
 
-def fetch_reports(client: Web3Client) -> list[VaultReport]:
-    """The current report of every vault the PortalHub routes a chain to."""
+def fetch_reports(client: Web3Client, block_number: int) -> list[VaultReport]:
+    """Read every registered vault at the same finalized Ethereum block.
+
+    Args:
+        client: Ethereum RPC client.
+        block_number: Finalized block used for all registry and vault reads.
+
+    Returns:
+        The mirrored value and update timestamp for every registered vault.
+    """
     hub = client.get_contract(PORTAL_HUB, _HUB_ABI).functions
     reports = []
-    for chain_id in hub.getVaultChainIds().call():
-        vault = to_checksum_address(hub.getVault(chain_id).call())
-        total_assets, _, _, last_update = client.get_contract(vault, _VAULT_ABI).functions.portalAssetsReport().call()
+    for chain_id in hub.getVaultChainIds().call(block_identifier=block_number):
+        vault = to_checksum_address(hub.getVault(chain_id).call(block_identifier=block_number))
+        total_assets, _, _, last_update = (
+            client.get_contract(vault, _VAULT_ABI).functions.portalAssetsReport().call(block_identifier=block_number)
+        )
         reports.append(
             VaultReport(int(chain_id), vault, Decimal(int(total_assets)) / Decimal(10**18), int(last_update))
         )
     return reports
 
 
-def fetch_l2_farm_values() -> dict[int, Decimal] | None:
-    """USD in infiniFi's L2 farms per chain id, from its API, or None when the API is unavailable."""
-    response = fetch_json(API_URL, timeout=10)
-    farms = (response or {}).get("data", {}).get("farms")
-    if not isinstance(farms, list):
-        logger.warning("infiniFi API returned no farms; skipping the L2 comparison")
+def fetch_updates(client: Web3Client, vault: str, from_block: int, to_block: int) -> list[VaultUpdate]:
+    """Read assets-update events in bounded block ranges, preserving execution order.
+
+    Args:
+        client: Ethereum RPC client.
+        vault: Mainnet vault emitting the events.
+        from_block: First block to inspect, inclusive.
+        to_block: Last finalized block to inspect, inclusive.
+
+    Returns:
+        Each update's booked before/after values in execution order.
+    """
+    event = client.get_contract(vault, _VAULT_ABI).events.PortalUpdate()
+    updates = []
+    for start in range(from_block, to_block + 1, LOG_BLOCK_RANGE):
+        logs = event.get_logs(from_block=start, to_block=min(start + LOG_BLOCK_RANGE - 1, to_block))
+        for log in sorted(logs, key=lambda entry: (entry["blockNumber"], entry["logIndex"])):
+            args = log["args"]
+            updates.append(
+                VaultUpdate(
+                    int(args["timestamp"]),
+                    Decimal(int(args["oldAssets"])) / Decimal(10**18),
+                    Decimal(int(args["newAssets"])) / Decimal(10**18),
+                    f"0x{log['transactionHash'].hex()}",
+                )
+            )
+    return updates
+
+
+def drop_message(report: VaultReport, update: VaultUpdate) -> str | None:
+    """Describe a loss booked by an assets update that exceeds both loss thresholds.
+
+    Args:
+        report: Identifies the chain and mainnet vault.
+        update: The event's before/after farm-share values and transaction.
+
+    Returns:
+        The loss alert, or None when the update does not breach both thresholds.
+    """
+    fall = update.previous_value - update.value
+    if update.previous_value <= 0 or fall < MIN_VALUE or fall / update.previous_value <= DROP_THRESHOLD:
         return None
-    values: dict[int, Decimal] = {}
-    for farm in farms:
-        if not farm.get("isL2LiquidityFarm"):
-            continue
-        chain_id = API_CHAIN_IDS.get(str(farm.get("chain", "")).upper())
-        if chain_id is None:
-            logger.warning("infiniFi API L2 farm %s on unknown chain %s", farm.get("name"), farm.get("chain"))
-            continue
-        values[chain_id] = values.get(chain_id, Decimal(0)) + Decimal(str(farm.get("assetsNormalized", 0)))
-    return values
-
-
-def mismatch_message(report: VaultReport, l2_value: Decimal) -> str | None:
-    """Alert text when mainnet's booked value and the API's L2 value disagree too much, else None."""
-    difference = report.value - l2_value
-    larger = max(report.value, l2_value)
-    if abs(difference) < MIN_VALUE or abs(difference) <= MISMATCH_THRESHOLD * larger:
-        return None
-    return (
-        "⚠️ *Infinifi L2 Vault Mismatch*\n\n"
-        f"Chain: {_chain_name(report.chain_id)}\n"
-        f"Vault: {_link(report.vault)}\n"
-        f"Booked on mainnet: ${report.value:,.2f} (last assets update {_time(report.last_update)})\n"
-        f"On the L2 per infiniFi's API: ${l2_value:,.2f}\n"
-        f"Difference: ${difference:,.2f} ({abs(difference) / larger:.1%})\n\n"
-        "Mainnet's figure changes only through executed assets updates, including ones injected with "
-        "govReceive. Check the latest update against the L2."
-    )
-
-
-def drop_message(report: VaultReport, previous: Decimal, previous_at: int = 0) -> str | None:
-    """Alert text when the vault's value fell too far since the last stored reading, else None."""
-    fall = previous - report.value
-    if previous <= 0 or fall < MIN_VALUE or fall / previous <= DROP_THRESHOLD:
-        return None
-    previous_line = f"Previous reading: {_time(previous_at)}\n" if previous_at else ""
     return (
         "⚠️ *Infinifi L2 Vault Value Drop*\n\n"
         f"Chain: {_chain_name(report.chain_id)}\n"
         f"Vault: {_link(report.vault)}\n"
-        f"Reported value: ${previous:,.2f} → ${report.value:,.2f} (−{fall / previous:.1%})\n"
-        f"{previous_line}"
-        f"Last assets update: {_time(report.last_update)}\n\n"
-        "An executed assets update burned the vault's farm shares, booking the fall as a loss on mainnet. "
-        "Check whether it came over the bridge or through govReceive."
+        f"Booked farm value: ${update.previous_value:,.2f} → ${update.value:,.2f} "
+        f"(−{fall / update.previous_value:.1%})\n"
+        f"Assets update: {_time(update.timestamp)}\n"
+        f"Transaction: [{update.transaction_hash}](https://etherscan.io/tx/{update.transaction_hash})\n\n"
+        "This assets update burned the vault's farm shares, booking a loss on mainnet. "
+        "Check whether the update arrived over the bridge or through govReceive."
     )
 
 
@@ -204,29 +232,40 @@ def _alert_once(cache_key: str, message: str | None) -> None:
     write_last_value_with_timestamp_to_file(cache_filename, cache_key, 1)
 
 
-def check_report(report: VaultReport, now: int, l2_value: Decimal | None = None) -> None:
-    """Compare a vault's report with its last stored value, its update age and the L2, and alert on a breach."""
-    value_key = f"{PROTOCOL}_l2_vault_value_{report.vault.lower()}"
-    # The baseline never expires: a write-down during a monitoring gap must still compare against the last
-    # value seen. Only the alert dedupe below uses the hourly fresh window.
-    previous = Decimal(str(get_last_value_for_key_from_file(cache_filename, value_key)))
-    previous_at = int(get_last_value_for_key_from_file(cache_filename, cache_timestamp_key(value_key)))
-    # A drop is a one-off event: alert on it directly instead of holding breach state.
-    message = drop_message(report, previous, previous_at)
-    if message is not None:
-        send_alert(Alert(AlertSeverity.MEDIUM, message, PROTOCOL))
-    write_last_value_with_timestamp_to_file(cache_filename, value_key, str(report.value))
+def check_report(report: VaultReport, now: int, client: Web3Client, block_number: int) -> None:
+    """Inspect every new finalized assets update for losses and check report staleness.
+
+    Args:
+        report: The vault state at the finalized block.
+        now: Current Unix time used to check staleness.
+        client: Ethereum RPC client used to read update events.
+        block_number: Finalized block through which to advance the vault's cursor.
+
+    Raises:
+        ValueError: The RPC snapshot is older than the persisted cursor.
+    """
+    cursor_key = f"{PROTOCOL}_l2_vault_update_block_{report.vault.lower()}"
+    previous_block = int(get_last_value_for_key_from_file(cache_filename, cursor_key))
+    if previous_block > block_number:
+        raise ValueError(
+            f"Vault {report.vault}: cached block {previous_block} exceeds finalized block "
+            f"{block_number}; check whether the Ethereum RPC is behind."
+        )
+    if previous_block:
+        for update in fetch_updates(client, report.vault, previous_block + 1, block_number):
+            message = drop_message(report, update)
+            if message is not None:
+                send_alert(Alert(AlertSeverity.MEDIUM, message, PROTOCOL))
+    write_last_value_with_timestamp_to_file(cache_filename, cursor_key, block_number)
     _alert_once(f"{PROTOCOL}_l2_vault_stale_{report.vault.lower()}", stale_message(report, now))
-    if l2_value is not None:
-        _alert_once(f"{PROTOCOL}_l2_vault_mismatch_{report.vault.lower()}", mismatch_message(report, l2_value))
 
 
 def main() -> None:
+    """Read finalized mainnet vault state and alert on booked losses and stale reports."""
     client = ChainManager.get_client(Chain.MAINNET)
+    block_number = int(client.eth.get_block("finalized")["number"])
     now = int(datetime.now(UTC).timestamp())
-    l2_values = fetch_l2_farm_values()
-    for report in fetch_reports(client):
-        l2_value = None if l2_values is None else l2_values.get(report.chain_id, Decimal(0))
+    for report in fetch_reports(client, block_number):
         logger.info(
             "L2 vault %s %s: %s USD, last update %s",
             _chain_name(report.chain_id),
@@ -234,7 +273,7 @@ def main() -> None:
             f"{report.value:,.2f}",
             _time(report.last_update),
         )
-        check_report(report, now, l2_value)
+        check_report(report, now, client, block_number)
 
 
 if __name__ == "__main__":
