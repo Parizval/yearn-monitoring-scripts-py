@@ -228,6 +228,55 @@ class TestOperationIdLine(unittest.TestCase):
                 msg = build_alert_message([_make_event("Aave", operationId=proposal_id)], TIMELOCK_INFO)
                 self.assertNotIn("app.aave.com", msg)
 
+    def test_lido_vote_heading_and_link(self, _mock_ai: object) -> None:
+        """Lido vote alerts link to the vote and retain the proposal metadata."""
+        metadata = "Omnibus vote: activate 0x02 CSM"
+        for vote_id in ("206", 0):
+            with self.subTest(vote_id=vote_id):
+                event = _make_event("Lido", operationId=vote_id, metadata=metadata)
+                msg = build_alert_message([event], TIMELOCK_INFO)
+                self.assertIn("New Governance Vote", msg)
+                self.assertNotIn("New Operation Scheduled", msg)
+                self.assertIn(f"🆔 Vote: {vote_id}\n", msg)
+                self.assertIn(f"(https://dao.lido.fi/vote/{vote_id})", msg)
+                self.assertIn(metadata, msg)
+
+    def test_lido_missing_id_omits_governance_link(self, _mock_ai: object) -> None:
+        """An absent Lido vote ID must not produce a blank ID or broken link."""
+        for vote_id in (None, ""):
+            with self.subTest(vote_id=vote_id):
+                msg = build_alert_message([_make_event("Lido", operationId=vote_id)], TIMELOCK_INFO)
+                self.assertNotIn("🆔 Vote:", msg)
+                self.assertNotIn("dao.lido.fi/vote/", msg)
+
+    def test_lido_metadata_is_literal_markdown(self, _mock_ai: object) -> None:
+        """Vote descriptions cannot inject formatting or a disguised Markdown link."""
+        metadata = "Update staking_router: *unsafe [portal](https://example.invalid) `code` \\path"
+        event = _make_event("Lido", operationId="206", metadata=metadata)
+        msg = build_alert_message([event], TIMELOCK_INFO)
+        self.assertIn(
+            r"📄 Metadata: Update staking\_router: \*unsafe \[portal](https://example.invalid) \`code\` \\path",
+            msg,
+        )
+        self.assertIn("(https://dao.lido.fi/vote/206)", msg)
+
+    def test_lido_vote_link_survives_metadata_truncation(self, _mock_ai: object) -> None:
+        """Long descriptions retain a safe preview, the vote link, and the transaction."""
+        for character, prefix in (("x", ""), ("_", ""), ("_", "x"), ("\\", "")):
+            with self.subTest(character=character, prefix=prefix):
+                metadata = "Omnibus vote: " + prefix + character * MAX_MESSAGE_LENGTH
+                event = _make_event("Lido", operationId="206", metadata=metadata)
+                msg = build_alert_message([event], TIMELOCK_INFO)
+                self.assertLessEqual(len(msg), MAX_MESSAGE_LENGTH)
+                self.assertIn("📄 Metadata: Omnibus vote: ", msg)
+                self.assertIn("… (truncated)", msg)
+                self.assertIn("🆔 Vote: 206\n", msg)
+                self.assertIn("(https://dao.lido.fi/vote/206)", msg)
+                self.assertIn(f"/tx/{event['transactionHash']})", msg)
+                preview = msg.split("… (truncated)", 1)[0]
+                trailing_backslashes = len(preview) - len(preview.rstrip("\\"))
+                self.assertEqual(trailing_backslashes % 2, 0)
+
 
 class TestMapleProposalUnwrap(unittest.TestCase):
     """Maple ProposalScheduled has no target/data; recover them from the source tx."""

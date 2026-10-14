@@ -31,6 +31,7 @@ ENVIO_GRAPHQL_URL = os.getenv("ENVIO_GRAPHQL_URL")
 DEFAULT_LOG_LEVEL = os.getenv("TIMELOCK_ALERTS_LOG_LEVEL", "INFO")
 CACHE_KEY = "TIMELOCK_LAST_TS"
 AAVE_GOVERNANCE_PROPOSAL_URL = "https://app.aave.com/governance/v3/proposal/?proposalId="
+LIDO_GOVERNANCE_VOTE_URL = "https://dao.lido.fi/vote/"
 
 # YEARN_TIMELOCK alerts are also mirrored to this internal-only chat, in lockstep
 # with the public topic. Configure its credentials with
@@ -73,7 +74,7 @@ TIMELOCK_LIST: list[TimelockConfig] = [
     TimelockConfig("0x9aee0b04504cef83a65ac3f0e838d0593bcb2bc7", 1, "AAVE", "Aave Governance V3"),
     TimelockConfig("0x6d903f6003cca6255d85cca4d3b5e5146dc33925", 1, "COMP", "Compound Timelock"),
     TimelockConfig("0x2386dc45added673317ef068992f19421b481f4c", 1, "FLUID", "Fluid Timelock"),
-    TimelockConfig("0x2e59a20f205bb85a89c53f1936454680651e618e", 1, "LIDO", "Lido Timelock"),
+    TimelockConfig("0x2e59a20f205bb85a89c53f1936454680651e618e", 1, "LIDO", "Lido Aragon Voting"),
     TimelockConfig("0x2efff88747eb5a3ff00d4d8d0f0800e306c0426b", 1, "MAPLE", "Maple GovernorTimelock"),
     TimelockConfig("0xb2a3cf69c97afd4de7882e5fee120e4efc77b706", 1, "STRATA", "Strata 48h Timelock"),
     TimelockConfig("0x4f2682b78f37910704fb1aff29358a1da07e022d", 1, "STRATA", "Strata 24h Timelock"),
@@ -421,6 +422,34 @@ def _truncate_call_lines(call_lines: list[str], budget: int) -> str:
     return "\n".join(kept)
 
 
+def _format_lido_metadata(metadata: str, budget: int) -> str:
+    """Fit escaped Lido metadata without cutting a Markdown escape in half."""
+    text = f"📄 Metadata: {escape_markdown(metadata)}"
+    if len(text) <= budget:
+        return text
+    marker = "… (truncated)"
+    preview = text[: max(0, budget - len(marker))]
+    trailing_backslashes = len(preview) - len(preview.rstrip("\\"))
+    if trailing_backslashes % 2:
+        preview = preview[:-1]
+    return preview + marker[: max(0, budget)]
+
+
+def _format_call_details(call_lines: list[str], budget: int, metadata: str | None) -> str:
+    """Fit call details and a Lido metadata preview within the available budget."""
+    if budget <= 0:
+        return ""
+    text = "\n".join(call_lines)
+    if metadata:
+        separator = "\n" if text else ""
+        remaining = budget - len(text) - len(separator)
+        if remaining > 0:
+            text += separator + _format_lido_metadata(metadata, remaining)
+    if len(text) > budget:
+        return _truncate_call_lines(call_lines, budget)
+    return text
+
+
 def build_alert_message(events: list[dict], timelock_info: TimelockConfig) -> str:
     """Build a Telegram alert message for a group of TimelockEvent events (same operationId).
 
@@ -443,13 +472,12 @@ def build_alert_message(events: list[dict], timelock_info: TimelockConfig) -> st
     # underscore in "YEARN_TIMELOCK" was opening an italic that never
     # closed, breaking the whole message with Telegram 400.
     header_lines: list[str] = [
-        "⏰ *TIMELOCK: New Operation Scheduled*",
+        "🗳️ *New Governance Vote*" if timelock_type == "Lido" else "⏰ *TIMELOCK: New Operation Scheduled*",
         f"🅿️ Protocol: {escape_markdown(timelock_info.protocol)}",
         _format_address(first["timelockAddress"], explorer, f"📋 {escape_markdown(timelock_info.label)}: "),
         f"🔗 Chain: {chain_name}",
     ]
 
-    # Delay (if applicable)
     delay_line = _format_delay_info(first.get("delay"), timelock_type)
     if delay_line:
         header_lines.append(delay_line)
@@ -477,13 +505,13 @@ def build_alert_message(events: list[dict], timelock_info: TimelockConfig) -> st
             call_lines.append(f"🔗 Governance: [Aave Governance]({AAVE_GOVERNANCE_PROPOSAL_URL}{proposal_id})")
 
     elif timelock_type == "Lido":
+        vote_id = operation_id if operation_id is not None else ""
+        if vote_id != "":
+            header_lines.append(f"🆔 Vote: {vote_id}")
+            header_lines.append(f"🔗 Governance: [Lido Vote #{vote_id}]({LIDO_GOVERNANCE_VOTE_URL}{vote_id})")
         creator = first.get("creator")
         if creator:
             call_lines.append(_format_address(creator, explorer, "👤 Creator: "))
-        metadata = first.get("metadata")
-        if metadata:
-            call_lines.append(f"📄 Metadata: {metadata}")
-        call_lines.append(f"🆔 Vote: {first.get('operationId') or ''}")
 
     elif timelock_type == "Maple":
         call_lines.append(f"🆔 Proposal: {first.get('operationId') or ''}")
@@ -500,7 +528,6 @@ def build_alert_message(events: list[dict], timelock_info: TimelockConfig) -> st
         if explanation:
             ai_line = format_explanation_line(explanation)
 
-    # Footer (always included)
     if explorer:
         footer = f"🔗 Tx: [{tx_hash}]({explorer}/tx/{tx_hash})"
     else:
@@ -511,12 +538,8 @@ def build_alert_message(events: list[dict], timelock_info: TimelockConfig) -> st
     fixed_len = len(header_text) + len(ai_line) + len(footer) + 3  # +3 for joining newlines between parts
     budget = MAX_MESSAGE_LENGTH - fixed_len
 
-    if budget > 0:
-        call_text = "\n".join(call_lines)
-        if len(call_text) > budget:
-            call_text = _truncate_call_lines(call_lines, budget)
-    else:
-        call_text = ""
+    metadata = first.get("metadata") if timelock_type == "Lido" else None
+    call_text = _format_call_details(call_lines, budget, metadata)
 
     parts = [header_text]
     if call_text:
