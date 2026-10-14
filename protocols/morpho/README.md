@@ -17,7 +17,7 @@ The script checks if there are any new values pending in the timelock for a give
 
 Add a `VaultConfig` to `VAULTS_V1_BY_CHAIN` in [config.py](./config.py). Every configured V1 vault receives both market and governance monitoring. `governance.py` iterates every chain in that mapping, so a new chain needs no script change; a failure on one chain is logged and the remaining chains are still checked before the run fails.
 
-Monitored chains: Mainnet, Base, Katana, and HyperEVM. HyperEVM uses `PROVIDER_URL_HYPEREVM` when set; if no `PROVIDER_URL_HYPEREVM*` variable exists it falls back to the public `https://rpc.hyperliquid.xyz/evm` (`PUBLIC_RPC_URLS` in [utils/chains.py](../../utils/chains.py)). RPC requests time out after 60 seconds so a stalled public endpoint cannot hang the daily profile.
+Monitored chains: Mainnet, Base, Katana, HyperEVM, and Robinhood Chain (V2 only). HyperEVM uses `PROVIDER_URL_HYPEREVM` when set; if no `PROVIDER_URL_HYPEREVM*` variable exists it falls back to the public `https://rpc.hyperliquid.xyz/evm` (`PUBLIC_RPC_URLS` in [utils/chains.py](../../utils/chains.py)). RPC requests time out after 60 seconds so a stalled public endpoint cannot hang the daily profile.
 
 ## Vaults & Markets
 
@@ -165,6 +165,8 @@ Monitored V1 and V2 vaults live in [`config.py`](./config.py) as typed `VaultCon
 To add a new v2 vault, append a row to the chain's list and pick a risk tier (1–5).
 
 A V2 vault that allocates only through a `MetaMorpho` adapter into a V1 vault (e.g. OUSD V2 on HyperEVM) sets `monitor_markets=False`: `governance_v2.py` still watches it, while `markets_v2.py` skips it because the wrapped V1 vault must be in `VAULTS_V1_BY_CHAIN`, where its markets are checked.
+
+V2 monitoring needs no RPC, so a new chain only needs a `Chain` entry with its explorer URL in [utils/chains.py](../../utils/chains.py) and, if Morpho's URL slug differs from the enum name (e.g. `robinhood-chain`), a case in `get_chain_name` in [_shared.py](./_shared.py).
 
 ### Cache
 

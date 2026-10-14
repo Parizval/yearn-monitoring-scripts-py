@@ -151,6 +151,9 @@ MARKETS_RISK_2 = {
         "0xe7aa046832007a975d4619260d221229e99cc27da2e6ef162881202b4cd2349b",  # kHYPE/USDC -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — RedStone kHYPE_FUNDAMENTAL (kHYPE/HYPE) × RedStone HYPE/USD; no quote feed (USDC = $1).
         "0x96c47d3797394dd25e33f814216793a89d2e6edcc54d1dac3ab4c2b2d82a73b9",  # kHYPE/USDC -> lltv 77%, oracle: MorphoChainlinkOracleV2 — RedStone kHYPE/USD ÷ RedStone USDC/USD (spot).
     ],
+    Chain.ROBINHOOD: [
+        "0x50bc39b5722fb5634c436d74c6787f3c125b879e7b73cf9e9ecc01bbb57b8e55",  # SPY/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink RHSPY/USD and Chainlink USDG/USD. Broad index ETF; equity feeds only move in trading hours, so weekend gaps are absorbed by the low LLTV.
+    ],
 }
 
 MARKETS_RISK_3 = {
@@ -192,6 +195,11 @@ MARKETS_RISK_3 = {
     ],
     Chain.ARBITRUM: [
         "0x71c2954e00c8f72864600c9d1d1cd70fa15202c4294cd938d80add3be2eced26",  # sUSDai/USDC -> lltv 91.5%, oracle: Chronicle sUSDai/USD and Chainlink USDC/USD.
+    ],
+    Chain.ROBINHOOD: [
+        "0x69400cfe81f2ae381b9a9f27076a4d637338379d999e9ffdfbde52f0876312ee",  # META/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink Robinhood META/USD and Chainlink USDG/USD. Single stock, gap risk outside trading hours.
+        "0x66306c087add8907752320b309934abcc354d21626de8115c79df49d9c214edc",  # NVDA/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink RHNVDA/USD and Chainlink USDG/USD. Single stock, gap risk outside trading hours.
+        "0x21ea2a012b888120e328775c2a7bf6fb4619cf4c4c631ad1c9b6db51f8882d5a",  # SPCX/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink Robinhood SPCX/USD and Chainlink USDG/USD. Single stock, gap risk outside trading hours.
     ],
 }
 
