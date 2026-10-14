@@ -13,6 +13,7 @@ from protocols.morpho._shared import (
     MarketState,
     MorphoMonitoringError,
     MorphoV2MonitoringError,
+    get_vault_url,
 )
 from protocols.morpho.config import VAULTS_V2_BY_CHAIN, VaultConfig, get_collateral_vaults_by_asset
 from protocols.morpho.markets import (
@@ -469,6 +470,21 @@ class TestMorphoRiskLookup(unittest.TestCase):
         self.assertEqual(get_market_risk_level(market_id.upper().replace("0X", "0x"), Chain.HYPEREVM), 2)
         self.assertEqual(get_market_risk_level(market_id, Chain.MAINNET), 5)
         self.assertEqual(get_market_risk_level("0x" + "00" * 32, Chain.HYPEREVM), 5)
+
+    def test_robinhood_stonk_vault_markets_are_tiered(self) -> None:
+        spy = "0x50bc39b5722fb5634c436d74c6787f3c125b879e7b73cf9e9ecc01bbb57b8e55"
+        nvda = "0x66306c087add8907752320b309934abcc354d21626de8115c79df49d9c214edc"
+
+        self.assertEqual(get_market_risk_level(spy, Chain.ROBINHOOD), 2)
+        self.assertEqual(get_market_risk_level(nvda, Chain.ROBINHOOD), 3)
+
+
+class TestMorphoUrls(unittest.TestCase):
+    def test_robinhood_uses_morpho_chain_slug(self) -> None:
+        vault = "0x8c258F25fc6fBe3f01ccC828E2C3840A46a4a9A2"
+
+        self.assertEqual(get_vault_url(vault, Chain.ROBINHOOD), f"https://app.morpho.org/robinhood-chain/vault/{vault}")
+        self.assertEqual(Chain.ROBINHOOD.explorer_url, "https://robinhoodchain.blockscout.com")
 
 
 if __name__ == "__main__":

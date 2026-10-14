@@ -152,6 +152,9 @@ MARKETS_RISK_2 = {
         "0xe7aa046832007a975d4619260d221229e99cc27da2e6ef162881202b4cd2349b",  # kHYPE/USDC -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — RedStone kHYPE_FUNDAMENTAL (kHYPE/HYPE) × RedStone HYPE/USD; no quote feed (USDC = $1).
         "0x96c47d3797394dd25e33f814216793a89d2e6edcc54d1dac3ab4c2b2d82a73b9",  # kHYPE/USDC -> lltv 77%, oracle: MorphoChainlinkOracleV2 — RedStone kHYPE/USD ÷ RedStone USDC/USD (spot).
     ],
+    Chain.ROBINHOOD: [
+        "0x50bc39b5722fb5634c436d74c6787f3c125b879e7b73cf9e9ecc01bbb57b8e55",  # SPY/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink RHSPY/USD and Chainlink USDG/USD. Broad index ETF; equity feeds only move in trading hours, so weekend gaps are absorbed by the low LLTV.
+    ],
 }
 
 MARKETS_RISK_3 = {
@@ -199,6 +202,11 @@ MARKETS_RISK_3 = {
         "0x71c2954e00c8f72864600c9d1d1cd70fa15202c4294cd938d80add3be2eced26",  # sUSDai/USDC -> lltv 91.5%, oracle: Chronicle sUSDai/USD and Chainlink USDC/USD.
         "0x8147c63f3f6f5a0825c84bf2cb11443c72b609fa39cf9a362e3d4dc2c5ca76c4",  # PT-USDai-19FEB2026/USDC -> lltv 91.5%, oracle: MetaOracleDeviationTimelock by Steakhouse whose primary and backup both read the same Pendle Chainlink-compatible PT feed https://arbiscan.io/address/0x7bfCE6c9717F29dcffAAE3a96DE10c379fE97F88 (900s AMM TWAP) where USDai=USDC, so the deviation check moves in lockstep with a manipulated PT price instead of catching it.
         "0x7717f1e04510390518811b3133ea47c298094ddd1d806ed8f8867d88c727bad7",  # PT-sUSDai-19FEB2026/USDC -> lltv 86%, oracle: Pendle Chainlink-compatible oracle (PT to asset, 900s AMM TWAP) for sUSDai with ERC4626 vault rate sUSDai to USDai. Chainlink oracle USDC/USD.
+    ],
+    Chain.ROBINHOOD: [
+        "0x69400cfe81f2ae381b9a9f27076a4d637338379d999e9ffdfbde52f0876312ee",  # META/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink Robinhood META/USD and Chainlink USDG/USD. Single stock, gap risk outside trading hours.
+        "0x66306c087add8907752320b309934abcc354d21626de8115c79df49d9c214edc",  # NVDA/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink RHNVDA/USD and Chainlink USDG/USD. Single stock, gap risk outside trading hours.
+        "0x21ea2a012b888120e328775c2a7bf6fb4619cf4c4c631ad1c9b6db51f8882d5a",  # SPCX/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink Robinhood SPCX/USD and Chainlink USDG/USD. Single stock, gap risk outside trading hours.
     ],
 }
 

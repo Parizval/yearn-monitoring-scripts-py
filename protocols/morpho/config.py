@@ -88,6 +88,7 @@ VAULTS_V2_BY_CHAIN: dict[Chain, tuple[VaultConfig, ...]] = {
         # Allocates only through a MetaMorpho adapter into the HyperEVM OUSD V1 vault.
         VaultConfig("OUSD V2", "0xE90959cbE7E56b5eBFF9AD12de611A4976F2d2B1", 2, monitor_markets=False),
     ),
+    Chain.ROBINHOOD: (VaultConfig("Yearn Stonk USDG", "0x8c258F25fc6fBe3f01ccC828E2C3840A46a4a9A2", 3),),
     Chain.KATANA: (
         VaultConfig("Yearn OG USDC", "0xca44cbe1FB03691d43d2d93AA460e2fCB03878fE", 1, KATANA_USDC),
         VaultConfig("Yearn OG USDT", "0x4284d4F9f4d61eA57B8F0943547c7C19C5B9B249", 1, KATANA_USDT),

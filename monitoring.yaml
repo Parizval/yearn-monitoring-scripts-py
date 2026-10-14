@@ -273,7 +273,7 @@ protocols:
 
   morpho:
     display_name: "Morpho"
-    description: "Morpho market, vault, and governance monitoring on Mainnet, Base, Katana, and HyperEVM"
+    description: "Morpho market, vault, and governance monitoring on Mainnet, Base, Katana, HyperEVM, and Robinhood Chain"
     cadence: "Hourly / Daily"
     tasks:
       - protocols/morpho/markets.py

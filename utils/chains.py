@@ -6,6 +6,7 @@ EXPLORER_URLS: dict[int, str] = {
     137: "https://polygonscan.com",
     8453: "https://basescan.org",
     999: "https://hyperevmscan.io",
+    4663: "https://robinhoodchain.blockscout.com",
     42161: "https://arbiscan.io",
     747474: "https://katanascan.com",
 }
@@ -24,6 +25,7 @@ class Chain(Enum):
     ARBITRUM = (42161, "arbitrum", "arb")
     POLYGON = (137, "polygon", "matic")
     HYPEREVM = (999, "hyperevm", "hype")
+    ROBINHOOD = (4663, "robinhood", "eth")
     KATANA = (747474, "katana", "kat")
 
     def __init__(self, chain_id: int, network_name: str, symbol: str):

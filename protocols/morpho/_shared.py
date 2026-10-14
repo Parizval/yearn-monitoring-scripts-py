@@ -67,6 +67,8 @@ def get_chain_name(chain: Chain) -> str:
     """Return the chain segment used in Morpho frontend URLs."""
     if chain == Chain.MAINNET:
         return "ethereum"
+    if chain == Chain.ROBINHOOD:
+        return "robinhood-chain"
     return str(chain.name).lower()
 
 
