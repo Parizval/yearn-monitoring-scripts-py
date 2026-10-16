@@ -26,6 +26,18 @@ logger = get_logger(PROTOCOL)
 
 IUSD_ADDRESS = Web3.to_checksum_address("0x48f9e38f3070AD8945DFEae3FA70987722E3D89c")
 IUSD_DECIMALS = 18
+# Accounting.totalAssetsValue() is the USD value (WAD) of all farms, including L2 deposits
+# mirrored by mainnet OutlandVaults. The API TVL is this same value, read at an unknown block.
+ACCOUNTING_ADDRESS = Web3.to_checksum_address("0x7A5C5dbA4fbD0e1e1A2eCDBe752fAe55f6E842B3")
+ACCOUNTING_ABI = [
+    {
+        "name": "totalAssetsValue",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "uint256"}],
+    }
+]
 
 LIQUID_RESERVES_THRESHOLD_PERCENT = 0.10
 LIQUID_RESERVES_FLOOR_USD = 4_000_000
@@ -152,15 +164,29 @@ def main():
     erc20_abi = load_abi("common-abi/ERC20.json")
 
     iusd_contract = client.get_contract(IUSD_ADDRESS, erc20_abi)
+    accounting_contract = client.get_contract(ACCOUNTING_ADDRESS, ACCOUNTING_ABI)
 
     try:
-        # --- 1. iUSD Supply ---
-        # The backing API does not expose a block identifier to this monitor. Pin
-        # and report the on-chain side so any cross-source alert is reproducible.
+        # --- 1. iUSD Supply and On-chain Backing ---
+        # Both sides of the backing ratio are read at the same block. The API TVL can
+        # lag a mint by several blocks, which made API TVL / live supply drop by the
+        # minted amount (false backing alert at block 26205879).
         supply_block_number = int(client.eth.block_number)
         iusd_supply_raw = int(iusd_contract.functions.totalSupply().call(block_identifier=supply_block_number))
 
         iusd_supply = iusd_supply_raw / (10**IUSD_DECIMALS)
+
+        onchain_backing: float | None = None
+        try:
+            onchain_backing = (
+                int(accounting_contract.functions.totalAssetsValue().call(block_identifier=supply_block_number)) / 1e18
+            )
+        except Exception as e:
+            logger.warning("Accounting.totalAssetsValue() failed at block %s: %s", supply_block_number, e)
+            send_error_message(
+                f"Infinifi Accounting.totalAssetsValue() failed at block {supply_block_number}; backing check skipped: {e}",
+                PROTOCOL,
+            )
 
         # --- 2. Fetch API Data ---
         liquid_reserves: float | None = None
@@ -227,9 +253,9 @@ def main():
         if pending_redemptions > 0:
             logger.info("Pending Redeems: $%s", f"{pending_redemptions:,.2f}")
 
-        if total_backing > 0 and iusd_supply > 0:
-            backing_per_iusd = total_backing / iusd_supply
-            logger.info("Backing / iUSD:  %.6f", backing_per_iusd)
+        if onchain_backing is not None and onchain_backing > 0 and iusd_supply > 0:
+            backing_per_iusd = onchain_backing / iusd_supply
+            logger.info("On-chain Assets: $%s\nBacking / iUSD:  %.6f", f"{onchain_backing:,.2f}", backing_per_iusd)
         else:
             backing_per_iusd = 0
 
@@ -317,9 +343,9 @@ def main():
                     alert_message=(
                         "🚨 *Infinifi Backing Alert*\n\n"
                         f"Backing per iUSD is {backing_per_iusd:.6f}, below {BACKING_PER_IUSD_MIN:.3f}.\n"
-                        f"TVL: ${total_backing:,.2f}\n"
-                        f"Supply: ${iusd_supply:,.2f}\n"
-                        f"Supply block: {supply_block_number}"
+                        f"Accounting assets: ${onchain_backing:,.2f}\n"
+                        f"iUSD supply: {iusd_supply:,.2f}\n"
+                        f"Block: {supply_block_number}"
                     ),
                 )
             else:
