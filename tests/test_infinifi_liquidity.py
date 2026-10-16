@@ -25,10 +25,17 @@ def reserve_state(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return state
 
 
-def run_main(monkeypatch: pytest.MonkeyPatch, asset_stats: dict[str, Any]) -> None:
+def run_main(
+    monkeypatch: pytest.MonkeyPatch, asset_stats: dict[str, Any], onchain_assets: Any = 100_000_000 * 10**18
+) -> MagicMock:
     client = MagicMock()
     client.eth.block_number = 23_456_789
-    client.get_contract.return_value.functions.totalSupply.return_value.call.return_value = 100_000_000 * 10**18
+    functions = client.get_contract.return_value.functions
+    functions.totalSupply.return_value.call.return_value = 100_000_000 * 10**18
+    if isinstance(onchain_assets, Exception):
+        functions.totalAssetsValue.return_value.call.side_effect = onchain_assets
+    else:
+        functions.totalAssetsValue.return_value.call.return_value = onchain_assets
     monkeypatch.setattr(infinifi.ChainManager, "get_client", lambda _chain: client)
     monkeypatch.setattr(
         infinifi,
@@ -36,6 +43,7 @@ def run_main(monkeypatch: pytest.MonkeyPatch, asset_stats: dict[str, Any]) -> No
         lambda: {"code": "OK", "data": {"stats": {"asset": asset_stats}}},
     )
     infinifi.main()
+    return client
 
 
 def test_infinifi_tvl_growth_triggers_breach_with_unchanged_reserves(reserve_state: dict[str, Any]) -> None:
@@ -156,3 +164,47 @@ def test_infinifi_main_zero_reserves_without_pending_redemptions_clears_pressure
 
     assert [alert.severity for alert in reserve_state["alerts"]] == [AlertSeverity.CRITICAL]
     assert reserve_state["values"][f"{infinifi.PROTOCOL}_redemption_pressure_breach"] == 0
+
+
+def test_infinifi_backing_uses_same_block_accounting_not_lagging_api_tvl(
+    monkeypatch: pytest.MonkeyPatch, reserve_state: dict[str, Any]
+) -> None:
+    # API TVL lags a mint (99.7M vs 100M supply) but on-chain assets at the same block match supply.
+    client = run_main(monkeypatch, {"totalLiquidAssetNormalized": 20_000_000, "totalTVLAssetNormalized": 99_700_000})
+
+    functions = client.get_contract.return_value.functions
+    functions.totalSupply.return_value.call.assert_called_once_with(block_identifier=23_456_789)
+    functions.totalAssetsValue.return_value.call.assert_called_once_with(block_identifier=23_456_789)
+    assert reserve_state["alerts"] == []
+    assert reserve_state["values"][f"{infinifi.PROTOCOL}_backing_per_iusd_breach"] == 0
+
+
+def test_infinifi_backing_below_threshold_alerts_critical(
+    monkeypatch: pytest.MonkeyPatch, reserve_state: dict[str, Any]
+) -> None:
+    run_main(
+        monkeypatch,
+        {"totalLiquidAssetNormalized": 20_000_000, "totalTVLAssetNormalized": 100_000_000},
+        onchain_assets=99_800_000 * 10**18,
+    )
+
+    alerts = reserve_state["alerts"]
+    assert [alert.severity for alert in alerts] == [AlertSeverity.CRITICAL]
+    assert "Backing per iUSD is 0.998000, below 0.999" in alerts[0].message
+    assert "Accounting assets: $99,800,000.00" in alerts[0].message
+    assert "Block: 23456789" in alerts[0].message
+
+
+def test_infinifi_backing_skipped_when_accounting_read_fails(
+    monkeypatch: pytest.MonkeyPatch, reserve_state: dict[str, Any]
+) -> None:
+    run_main(
+        monkeypatch,
+        {"totalLiquidAssetNormalized": 20_000_000, "totalTVLAssetNormalized": 100_000_000},
+        onchain_assets=RuntimeError("execution reverted"),
+    )
+
+    assert reserve_state["alerts"] == []
+    assert len(reserve_state["errors"]) == 1
+    assert "totalAssetsValue() failed at block 23456789" in reserve_state["errors"][0]
+    assert f"{infinifi.PROTOCOL}_backing_per_iusd_breach" not in reserve_state["values"]
