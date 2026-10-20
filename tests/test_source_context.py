@@ -6,14 +6,18 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 from utils.source_context import (
+    MAX_BODY_LINES,
+    _build_context,
     _extract_function_body,
     _extract_function_snippet,
     _function_signature_from_abi,
+    extract_short_function_body,
     extract_state_var_snippet,
     fetch_function_input_names,
     fetch_source,
     fetch_verified_contract,
     find_state_var_writes,
+    format_source_context,
     get_contract_label,
     get_source_context,
     reset_cache,
@@ -131,6 +135,135 @@ class TestInheritdocResolution(unittest.TestCase):
         source = _INHERITDOC_SOURCE.replace("/// @notice Removes a user's commitment.", "/// @inheritdoc IBase")
         snippet = _extract_function_snippet(source, "bounce")
         self.assertIn("/// @inheritdoc IVault", snippet)
+
+
+# Shape of GroveCompounder (0xe060B80438771f13078048c3b0d930efECA6E622): an interface
+# declaration first, earlier functions with block natspec, and a setter whose natspec
+# says it only records a requirement while its body also sets the Auction's floor.
+GROVE_SOURCE = """
+interface IStrategy {
+    function setMinimumAuctionPrice(uint256 _minimumAuctionPrice) external;
+}
+
+contract GroveCompounder {
+    /**
+     * @notice Manually claim rewards from staking contract.
+     */
+    function claimRewards() external onlyKeepers {
+        _claimRewards();
+    }
+
+    /**
+     * @notice Set the minimum GROVE auction price required by the strategy.
+     * @dev The Auction itself must be configured with at least this minimum price.
+     */
+    function setMinimumAuctionPrice(uint256 _minimumAuctionPrice) external onlyManagement {
+        Auction(auction).setMinimumPrice(_minimumAuctionPrice);
+        minimumAuctionPrice = _minimumAuctionPrice;
+    }
+}
+"""
+
+
+class TestFunctionBody(unittest.TestCase):
+    def test_block_natspec_does_not_swallow_earlier_functions(self) -> None:
+        source = GROVE_SOURCE.replace("interface IStrategy {", "interface IUnrelated {").replace(
+            "function setMinimumAuctionPrice(uint256 _minimumAuctionPrice) external;", ""
+        )
+        snippet = _extract_function_snippet(source, "setMinimumAuctionPrice")
+        self.assertIn("@notice Set the minimum GROVE auction price", snippet)
+        self.assertNotIn("claimRewards", snippet)
+
+    def test_body_skips_interface_declarations(self) -> None:
+        body = _extract_function_body(GROVE_SOURCE, "setMinimumAuctionPrice")
+        self.assertIn("Auction(auction).setMinimumPrice(_minimumAuctionPrice);", body)
+
+    def test_short_body_is_shown_after_the_natspec(self) -> None:
+        ctx = _build_context("GroveCompounder", GROVE_SOURCE, "setMinimumAuctionPrice")
+        assert ctx is not None
+        self.assertEqual(
+            ctx.function_body,
+            "Auction(auction).setMinimumPrice(_minimumAuctionPrice);\nminimumAuctionPrice = _minimumAuctionPrice;",
+        )
+        rendered = format_source_context(ctx)
+        self.assertIn("Function body (verified source — what actually executes; it overrides the natspec):", rendered)
+        self.assertIn("    Auction(auction).setMinimumPrice(_minimumAuctionPrice);", rendered)
+
+    def test_long_body_is_omitted(self) -> None:
+        lines = "\n".join(f"        x{i} = {i};" for i in range(MAX_BODY_LINES + 1))
+        source = f"contract C {{\n    function big() external {{\n{lines}\n    }}\n}}"
+        self.assertEqual(extract_short_function_body(source, "big"), "")
+        self.assertIn("x0 = 0;", _extract_function_body(source, "big"))
+
+    def test_vyper_body_drops_the_docstring(self) -> None:
+        body = extract_short_function_body(VYPER_VAULT_SOURCE, "update_debt")
+        self.assertEqual(body, "return self._update_debt(strategy, target_debt, max_loss)")
+
+
+# Shape of the verified Auction 1.0.5: overloads that differ in what they run.
+OVERLOADED_SOURCE = """
+contract Auction {
+    /// @notice Take the full lot and send it to the caller.
+    function take(address _from) external virtual returns (uint256) {
+        return _take(_from, type(uint256).max, msg.sender, new bytes(0));
+    }
+
+    /// @notice Take up to `_maxAmount`, sent to `_receiver`, with a callback.
+    function take(address _from, uint256 _maxAmount, address _receiver, bytes calldata _data)
+        external
+        virtual
+        returns (uint256)
+    {
+        return _take(_from, _maxAmount, _receiver, _data);
+    }
+
+    function sweep(IERC20 _token, uint _amount) external onlyGovernance {
+        _token.safeTransfer(msg.sender, _amount);
+    }
+}
+
+contract Base {
+    function settle(address _from) external virtual {
+        kicked[_from] = 0;
+    }
+}
+
+contract Derived is Base {
+    function settle(address _from) external override {
+        require(balance(_from) == 0, "!empty");
+        kicked[_from] = 0;
+    }
+}
+"""
+
+
+class TestOverloads(unittest.TestCase):
+    """The body is shown as what executes, so it must be the overload the call decodes to."""
+
+    def test_body_follows_the_decoded_signature(self) -> None:
+        full = extract_short_function_body(OVERLOADED_SOURCE, "take", "take(address,uint256,address,bytes)")
+        self.assertEqual(full, "return _take(_from, _maxAmount, _receiver, _data);")
+        short = extract_short_function_body(OVERLOADED_SOURCE, "take", "take(address)")
+        self.assertIn("type(uint256).max, msg.sender", short)
+
+    def test_snippet_shows_the_matching_declaration(self) -> None:
+        snippet = _extract_function_snippet(OVERLOADED_SOURCE, "take", "take(address,uint256,address,bytes)")
+        self.assertIn("Take up to `_maxAmount`", snippet)
+        self.assertNotIn("Take the full lot", snippet)
+
+    def test_overloads_without_a_signature_show_no_body(self) -> None:
+        self.assertEqual(extract_short_function_body(OVERLOADED_SOURCE, "take"), "")
+        ctx = _build_context("Auction", OVERLOADED_SOURCE, "take")
+        assert ctx is not None
+        self.assertEqual(ctx.function_body, "")
+
+    def test_a_base_and_an_override_with_different_bodies_show_no_body(self) -> None:
+        self.assertEqual(extract_short_function_body(OVERLOADED_SOURCE, "settle", "settle(address)"), "")
+
+    def test_interface_and_alias_types_match_their_abi_encoding(self) -> None:
+        body = extract_short_function_body(OVERLOADED_SOURCE, "sweep", "sweep(address,uint256)")
+        self.assertEqual(body, "_token.safeTransfer(msg.sender, _amount);")
+        self.assertEqual(extract_short_function_body(OVERLOADED_SOURCE, "sweep", "sweep(address,address)"), "")
 
 
 class TestExtractFunctionBody(unittest.TestCase):

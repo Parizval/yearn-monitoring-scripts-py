@@ -1,4 +1,4 @@
-"""Fetch verified contract source from Etherscan and extract relevant natspec.
+"""Fetch verified contract source from Etherscan and extract relevant natspec and short bodies.
 
 Used by the AI transaction explainer to ground LLM summaries in the actual
 contract semantics (function natspec, state-variable docs) rather than
@@ -9,11 +9,13 @@ Etherscan v2 uses a single multichain API key.
 
 import os
 import re
+import textwrap
 import threading
 from dataclasses import dataclass
 
 from eth_utils.abi import collapse_if_tuple
 
+from utils.calldata.decoder import split_top_level_types
 from utils.disk_cache import MISS, DiskCache
 from utils.http_client import fetch_json
 from utils.logger import get_logger
@@ -27,6 +29,13 @@ ETHERSCAN_V2_API_URL = "https://api.etherscan.io/v2/api"
 # never blow the LLM prompt up. The natspec for one function + a state var is
 # always under a few hundred chars in practice.
 MAX_SNIPPET_CHARS = 4000
+
+# A function body is shown in full only when it is this short. Setters usually are,
+# and the body is what executes: GroveCompounder's natspec says setMinimumAuctionPrice
+# only records a requirement, while its body also sets the Auction's own floor — a
+# report that read only the natspec told signers the auction price was untouched.
+MAX_BODY_LINES = 30
+MAX_BODY_CHARS = 2000
 
 # Per-process cache: (chain_id, address_lower) -> VerifiedContract or None for miss.
 # Backed by an on-disk cache (below) so the same verified source is not re-fetched from
@@ -81,7 +90,10 @@ def _record_cache_event(source: str, hit: bool, cache_key: tuple[int, str]) -> N
     )
 
 
-_NATSPEC_LINE = r"(?:[ \t]*///.*\n|[ \t]*\*[^/].*\n|[ \t]*/\*\*[\s\S]*?\*/[ \t]*\n)"
+# A `/** ... */` block may not contain `*/`: with a lazy `[\s\S]*?` the leftmost match
+# began at an earlier function's comment and ran to the one above the target,
+# pulling every function in between into the "natspec".
+_NATSPEC_LINE = r"(?:[ \t]*///.*\n|[ \t]*\*[^/].*\n|[ \t]*/\*\*(?:[^*]|\*(?!/))*\*/[ \t]*\n)"
 _NATSPEC_BLOCK = rf"(?:(?:{_NATSPEC_LINE})+)?"
 _INHERITDOC_RE = re.compile(r"@inheritdoc\s+(\w+)")
 
@@ -125,6 +137,7 @@ class SourceContext:
     contract_name: str
     function_snippet: str  # natspec + function signature line
     state_var_snippets: list[str]  # natspec + declaration for each mutated state var
+    function_body: str = ""  # the body's statements, when short enough to show in full
 
 
 def _fetch_etherscan_contract(chain_id: int, address: str) -> VerifiedContract | None:
@@ -457,13 +470,71 @@ def _function_input_names_from_abi(
     return names
 
 
-def _function_with_natspec(source: str, function_name: str) -> "re.Match[str] | None":
-    """First `function <name>` declaration with its preceding natspec (group 1) and signature (group 2)."""
+def _function_with_natspec(source: str, function_name: str, signature: str | None = None) -> "re.Match[str] | None":
+    """A `function <name>` declaration with its preceding natspec (group 1) and signature (group 2).
+
+    Picks the overload whose parameters match ``signature`` (``take(address,uint256)``);
+    the first declaration when no signature is given or none matches.
+    """
     pattern = re.compile(
         rf"({_NATSPEC_BLOCK})([ \t]*function\s+{re.escape(function_name)}\b[^{{;]*[{{;])",
         re.MULTILINE,
     )
-    return pattern.search(source)
+    matches = list(pattern.finditer(source))
+    if not matches:
+        return None
+    chosen = _overload_matches([m.group(2) for m in matches], signature)
+    return matches[chosen[0]] if chosen else matches[0]
+
+
+# Value types an ABI signature spells the same way as the source; anything else
+# (contracts, interfaces, enums, structs) encodes as address, uint8 or a tuple.
+_ELEMENTARY_TYPE_RE = re.compile(r"^(?:address|bool|string|bytes\d*|u?int\d*|u?fixed[\dx]*)$")
+_TYPE_ALIASES = {"uint": "uint256", "int": "int256", "byte": "bytes1"}
+_ARRAY_SUFFIX_RE = re.compile(r"^(.*?)((?:\[\d*\])*)$")
+
+
+def _declared_param_types(header: str) -> list[str] | None:
+    """Parameter types of a Solidity declaration: ``function f(uint a, IERC20 b)`` → ``["uint", "IERC20"]``."""
+    start = header.find("(")
+    if start == -1:
+        return None
+    depth = 0
+    for index in range(start, len(header)):
+        if header[index] == "(":
+            depth += 1
+        elif header[index] == ")":
+            depth -= 1
+            if depth == 0:
+                inner = re.sub(r"//[^\n]*|/\*[\s\S]*?\*/", "", header[start + 1 : index])
+                return [param.split()[0] for param in split_top_level_types(inner) if param.strip()]
+    return None
+
+
+def _param_types_match(declared: list[str], abi_types: list[str]) -> bool:
+    """Whether source parameter types can encode as the ABI types; non-value types match any."""
+    if len(declared) != len(abi_types):
+        return False
+    for source_type, abi_type in zip(declared, abi_types):
+        source_match, abi_match = _ARRAY_SUFFIX_RE.match(source_type), _ARRAY_SUFFIX_RE.match(abi_type)
+        if source_match is None or abi_match is None or source_match.group(2) != abi_match.group(2):
+            return False
+        base = _TYPE_ALIASES.get(source_match.group(1), source_match.group(1))
+        if _ELEMENTARY_TYPE_RE.match(base) and base != abi_match.group(1):
+            return False
+    return True
+
+
+def _overload_matches(headers: list[str], signature: str | None) -> list[int]:
+    """Indexes of the declarations ``signature`` selects; every index when no signature is given."""
+    if not signature or "(" not in signature:
+        return list(range(len(headers)))
+    abi_types = [t for t in split_top_level_types(signature[signature.index("(") + 1 : signature.rindex(")")]) if t]
+    return [
+        index
+        for index, header in enumerate(headers)
+        if (declared := _declared_param_types(header)) is not None and _param_types_match(declared, abi_types)
+    ]
 
 
 def _block_end(source: str, open_brace: int) -> int:
@@ -492,7 +563,7 @@ def _type_body(source: str, type_name: str) -> str:
     return source[match.end() : end - 1] if end != -1 else ""
 
 
-def _inherited_natspec(source: str, natspec: str, function_name: str) -> str:
+def _inherited_natspec(source: str, natspec: str, function_name: str, signature: str | None = None) -> str:
     """Natspec a `@inheritdoc <Type>` tag points at, or "" when it cannot be found.
 
     Implementations routinely carry only `/// @inheritdoc IFoo`, leaving the units
@@ -502,7 +573,7 @@ def _inherited_natspec(source: str, natspec: str, function_name: str) -> str:
     tag = _INHERITDOC_RE.search(natspec)
     if not tag:
         return ""
-    match = _function_with_natspec(_type_body(source, tag.group(1)), function_name)
+    match = _function_with_natspec(_type_body(source, tag.group(1)), function_name, signature)
     inherited = (match.group(1) or "") if match else ""
     # One hop only: an interface that itself defers again documents nothing here.
     if not inherited.strip() or _INHERITDOC_RE.search(inherited):
@@ -511,18 +582,19 @@ def _inherited_natspec(source: str, natspec: str, function_name: str) -> str:
     return "".join(line.strip() + "\n" for line in inherited.splitlines())
 
 
-def _extract_function_snippet(source: str, function_name: str) -> str:
+def _extract_function_snippet(source: str, function_name: str, signature: str | None = None) -> str:
     """Find a function definition and any preceding natspec comment block.
 
-    A bare `@inheritdoc` block is replaced by the natspec it refers to. Falls
+    With ``signature``, the overload whose parameters match it. A bare
+    `@inheritdoc` block is replaced by the natspec it refers to. Falls
     back to Vyper syntax when no Solidity ``function`` matches, so Vyper
     contracts (every Yearn V3 vault) get their signature and docstring too.
     """
-    match = _function_with_natspec(source, function_name)
+    match = _function_with_natspec(source, function_name, signature)
     if not match:
         return _extract_vyper_function_snippet(source, function_name)
     natspec = match.group(1) or ""
-    natspec = _inherited_natspec(source, natspec, function_name) or natspec
+    natspec = _inherited_natspec(source, natspec, function_name, signature) or natspec
     return f"{natspec.rstrip()}\n{match.group(2).strip()}".strip()
 
 
@@ -583,7 +655,9 @@ def _extract_vyper_function_snippet(source: str, function_name: str) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def find_state_var_writes(source: str, function_name: str, include_private: bool = False) -> list[str]:
+def find_state_var_writes(
+    source: str, function_name: str, include_private: bool = False, signature: str | None = None
+) -> list[str]:
     """State variable names assigned inside the function body, deduped, in order.
 
     Vyper storage is always written through ``self.`` (``self.claimable[a] = x``,
@@ -592,7 +666,9 @@ def find_state_var_writes(source: str, function_name: str, include_private: bool
     getter to read, but they still say what a function changes (OpenZeppelin's
     ``Ownable2Step.transferOwnership`` writes only ``_pendingOwner``).
     """
-    body = _extract_function_body(source, function_name)
+    bodies = _function_bodies(source, function_name)
+    chosen = _overload_matches([header for header, _ in bodies], signature)
+    body = bodies[chosen[0]][1] if chosen else (bodies[0][1] if bodies else "")
     pattern = _ASSIGNMENT_RE
     if not body:
         body = _extract_vyper_function_body(source, function_name)
@@ -611,15 +687,52 @@ def find_state_var_writes(source: str, function_name: str, include_private: bool
     return ordered
 
 
-def _extract_function_body(source: str, function_name: str) -> str:
-    """Return the body of `function <name>(...) { ... }` or "" if not found."""
-    pattern = re.compile(rf"function\s+{re.escape(function_name)}\b[^{{]*\{{", re.MULTILINE)
-    match = pattern.search(source)
-    if not match:
-        return ""
+def _function_bodies(source: str, function_name: str) -> list[tuple[str, str]]:
+    """(header, body) of every `function <name>(...) { ... }` definition, in source order.
 
-    end = _block_end(source, match.end() - 1)
-    return source[match.end() : end - 1] if end != -1 else ""
+    Bodiless declarations (``function f() external;`` in an interface) are skipped.
+    """
+    pattern = re.compile(rf"function\s+{re.escape(function_name)}\b[^{{;]*\{{", re.MULTILINE)
+    found: list[tuple[str, str]] = []
+    for match in pattern.finditer(source):
+        end = _block_end(source, match.end() - 1)
+        if end != -1:
+            found.append((match.group(0), source[match.end() : end - 1]))
+    return found
+
+
+def _extract_function_body(source: str, function_name: str) -> str:
+    """Return the body of the first `function <name>(...) { ... }` definition, or "" if not found."""
+    bodies = _function_bodies(source, function_name)
+    return bodies[0][1] if bodies else ""
+
+
+def _strip_vyper_docstring(body: str) -> str:
+    """Drop a Vyper body's leading docstring; the function snippet already shows it."""
+    return re.sub(r'^\s*"""[\s\S]*?"""[ \t]*\n?', "", body, count=1)
+
+
+def extract_short_function_body(source: str, function_name: str, signature: str | None = None) -> str:
+    """A function's body, dedented, when it fits ``MAX_BODY_LINES``/``MAX_BODY_CHARS``; else "".
+
+    Natspec describes intent and can be stale; the body shows what runs — which
+    state it writes and which other contracts it calls. The body is presented as
+    what executes, so it must be the right overload: ``signature`` selects it, and
+    when no definition or several different ones match (overloads without a
+    signature, or a base and an override), no body is returned. The Auction's
+    ``take(address)`` uses an unlimited amount and ``msg.sender``; showing it for a
+    ``take(address,uint256,address,bytes)`` call would misstate the call.
+    """
+    bodies = _function_bodies(source, function_name)
+    if bodies:
+        chosen = {bodies[index][1] for index in _overload_matches([header for header, _ in bodies], signature)}
+        body = chosen.pop() if len(chosen) == 1 else ""
+    else:
+        body = _strip_vyper_docstring(_extract_vyper_function_body(source, function_name))
+    body = textwrap.dedent(body.replace("\r\n", "\n")).strip("\n")
+    if not body.strip() or body.count("\n") + 1 > MAX_BODY_LINES or len(body) > MAX_BODY_CHARS:
+        return ""
+    return body
 
 
 def extract_state_var_snippet(source: str, var_name: str) -> str:
@@ -662,15 +775,21 @@ def _extract_vyper_state_var_snippet(source: str, var_name: str) -> str:
     return f"{comments.rstrip()}\n{match.group(2).strip()}".strip()
 
 
-def _build_context(contract_name: str, source: str, function_name: str) -> SourceContext | None:
-    """Extract natspec snippets from a source string. None if the function isn't found."""
-    func_snippet = _extract_function_snippet(source, function_name)
+def _build_context(
+    contract_name: str, source: str, function_name: str, signature: str | None = None
+) -> SourceContext | None:
+    """Extract natspec snippets from a source string. None if the function isn't found.
+
+    ``signature`` (``take(address,uint256)``) selects the overload the call decodes to.
+    """
+    func_snippet = _extract_function_snippet(source, function_name, signature)
     if not func_snippet:
         return None
 
-    var_names = find_state_var_writes(source, function_name)
+    body = extract_short_function_body(source, function_name, signature)
+    var_names = find_state_var_writes(source, function_name, signature=signature)
     var_snippets: list[str] = []
-    total = len(func_snippet)
+    total = len(func_snippet) + len(body)
     for name in var_names:
         snippet = extract_state_var_snippet(source, name)
         if not snippet:
@@ -684,11 +803,16 @@ def _build_context(contract_name: str, source: str, function_name: str) -> Sourc
         contract_name=contract_name,
         function_snippet=func_snippet,
         state_var_snippets=var_snippets,
+        function_body=body,
     )
 
 
-def get_source_context(chain_id: int, address: str, function_name: str) -> SourceContext | None:
+def get_source_context(
+    chain_id: int, address: str, function_name: str, signature: str | None = None
+) -> SourceContext | None:
     """Fetch source and extract natspec for `function_name` and its state writes.
+
+    ``signature`` (the decoded call's canonical signature) selects the overload.
 
     If the function isn't present in the target's verified source, follow the
     EIP-1967 proxy slot (if any) and retry against the implementation source.
@@ -696,7 +820,7 @@ def get_source_context(chain_id: int, address: str, function_name: str) -> Sourc
     """
     fetched = fetch_source(chain_id, address)
     if fetched:
-        ctx = _build_context(fetched[0], fetched[1], function_name)
+        ctx = _build_context(fetched[0], fetched[1], function_name, signature)
         if ctx:
             return ctx
 
@@ -710,7 +834,7 @@ def get_source_context(chain_id: int, address: str, function_name: str) -> Sourc
     fetched_impl = fetch_source(chain_id, impl)
     if not fetched_impl:
         return None
-    return _build_context(fetched_impl[0], fetched_impl[1], function_name)
+    return _build_context(fetched_impl[0], fetched_impl[1], function_name, signature)
 
 
 def get_contract_label(chain_id: int, address: str) -> str:
@@ -731,6 +855,10 @@ def format_source_context(ctx: SourceContext) -> str:
         lines.append(f"Contract: {ctx.contract_name}")
     lines.append("")
     lines.append(ctx.function_snippet)
+    if ctx.function_body:
+        lines.append("")
+        lines.append("Function body (verified source — what actually executes; it overrides the natspec):")
+        lines.append(textwrap.indent(ctx.function_body, "    "))
     if ctx.state_var_snippets:
         lines.append("")
         # These are the variables the function body assigns. Saying so stops the

@@ -21,7 +21,7 @@ from utils.erc20_metadata import ERC20Metadata, fetch_erc20_metadata
 from utils.formatting import format_decimal_amount, normalize_token_amount, parse_wei
 from utils.impl_diff import diff_implementations, format_impl_diff
 from utils.llm import get_llm_provider
-from utils.llm.base import LLMError, LLMProvider
+from utils.llm.base import LLMError, LLMProvider, LLMUsage
 from utils.llm.protocol_context import expand_executed_calls, resolve_protocol_context
 from utils.llm.report import (
     TOKEN_MOVE_SIGS,
@@ -93,6 +93,11 @@ Keep DETAIL lean:
 - Do not add a standalone list of contracts or addresses (the report's Call Flow and
   Reference sections already link them), and do not rebuild tables of values the Current
   State or Protocol Context sections already show — quote the before→after in prose.
+- When the same calls repeat across several contracts (a setter and a report() per
+  strategy), explain the pattern once, then give each contract's own numbers — do not
+  write a section per contract that repeats the same explanation.
+- Do not restate Protocol Context settings that do not bear on the verdict; the report
+  already publishes that section.
 
 Address hyperlink rule (applies to DETAIL only):
 - EVERY address you mention must be a markdown link to the block explorer, never a
@@ -110,7 +115,12 @@ Critical rules for parameter interpretation:
   use inverted or non-standard conventions (a "maxSlippage" may be a min-output ratio;
   a "fee" may be scaled to 1e4, 1e6, or 1e18).
 - When a Contract Source Context section is provided, trust the natspec over your prior
-  assumptions about the function name.
+  assumptions about the function name, and trust a shown function body over the natspec:
+  natspec can be stale, the body is what executes. An external call in the body
+  (`Auction(auction).setMinimumPrice(x)`) changes that other contract too — say so, and
+  never claim the other contract is left untouched. Natspec that describes what other code
+  enforces ("must be met before rewards can be kicked") is an unverified claim unless the
+  enforcing code is shown — do not state it as fact.
 - When a Current State section is provided, quote concrete before→after deltas.
 - Do NOT invent, recall, or assume the current/previous on-chain value. If no Current
   State section is present, describe only the NEW value being set — never phrase it as
@@ -137,9 +147,12 @@ Critical rules for parameter interpretation:
   normalized totalAssets, and configured token targets as verified deterministic facts. When it
   states the unit a parameter is denominated in (e.g. a Yearn V3 max_debt in the vault asset),
   use that unit and its normalized amounts without hedging, even if Related Tokens lists several
-  candidate tokens. Amounts it renders in a named token ("100,000,000 USDC") are AUTHORITATIVE —
-  report those, not the raw integers, and take full/partial, before→after and headroom figures
-  from it as stated. Prefer its contract names over raw labels. Distinguish
+  candidate tokens. Amounts it renders in a named token ("100,000,000 USDC") are AUTHORITATIVE
+  for units — report those, not the raw integers. Its current values are observations; its
+  after-batch figures (amounts moved, before→after, headroom, lots, liquidity, exposure) are the
+  adapter's model of the calls: use them, but where the Simulation Results show different
+  amounts, report the simulated ones and say they differ. Prefer its contract names over raw
+  labels. Distinguish
   the accounting asset from non-accounting ERC20 targets configured in an escrow whitelist;
   whitelisting proves permission to interact, but not how a token is valued or used downstream.
 - A bytes32 argument the Protocol Context or a Role Names section resolves to a keccak256
@@ -158,6 +171,11 @@ Critical rules for parameter interpretation:
 - Do not call a contract audited, battle-tested, low-fee, safe, or reputable, and do not
   characterize its fees or track record, unless a section of this prompt states it. A label
   names a contract; it is not evidence about its quality.
+- When the Protocol Context gives a vault's exit liquidity before → after, weigh it in the
+  verdict: a batch that cuts it sharply (by a third or more), or leaves funds reachable
+  only by a privileged manual update_debt (outside the default queue and the DebtAllocator),
+  limits depositors' withdrawals — say so in the TLDR and rate it at least MEDIUM, even when
+  no value leaves the protocol.
 - When a Risk Anchors section is provided, treat it as a typical floor/ceiling, not a
   verdict. Adjust up or down based on the specific parameters (e.g. grantRole of a
   minor role can be LOW; an upgrade to fresh-bytecode code can be CRITICAL).
@@ -354,6 +372,24 @@ class Explanation:
     detail: str
     report: str = ""
     title: str = ""
+    # One entry per LLM call, in order: what each stage cost and did.
+    stages: tuple["StageUsage", ...] = ()
+
+
+@dataclass(frozen=True)
+class StageUsage:
+    """One LLM call while explaining a transaction.
+
+    ``stage`` is ``summary`` (``summary-structured`` for a structured attempt that fell
+    back to text), ``critique-N`` or ``detail``. ``outcome`` says what the call did:
+    ``ok``, ``pass`` / ``revised`` for a critique, ``empty`` or ``error``. ``summary``
+    holds the TLDR a summary or revising critique produced, to compare rounds.
+    """
+
+    stage: str
+    outcome: str
+    usage: LLMUsage | None = None
+    summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -774,25 +810,25 @@ def _collect_source_contexts(
 ) -> list[SourceContext]:
     """Fetch source context for each (target, decoded_call) pair, best-effort.
 
-    Deduplicates by (target, function_name) then fans out the Etherscan
-    lookups in parallel. Silent on failure so a missing Etherscan key or
-    unverified contract never blocks an explanation.
+    Deduplicates by (target, signature) — overloads differ in what they run —
+    then fans out the Etherscan lookups in parallel. Silent on failure so a
+    missing Etherscan key or unverified contract never blocks an explanation.
     """
     seen: set[tuple[str, str]] = set()
-    unique: list[tuple[str, str]] = []
+    unique: list[tuple[str, str, str]] = []
     for target, decoded in targets_and_calls:
         if not target or not decoded.function_name:
             continue
-        key = (target.lower(), decoded.function_name)
+        key = (target.lower(), decoded.signature or decoded.function_name)
         if key in seen:
             continue
         seen.add(key)
-        unique.append((target, decoded.function_name))
+        unique.append((target, decoded.function_name, decoded.signature))
 
-    def fetch(item: tuple[str, str]) -> SourceContext | None:
-        target, fname = item
+    def fetch(item: tuple[str, str, str]) -> SourceContext | None:
+        target, fname, signature = item
         try:
-            return get_source_context(chain_id, target, fname)
+            return get_source_context(chain_id, target, fname, signature or None)
         except Exception as e:  # noqa: BLE001
             logger.info("Source context fetch failed for %s.%s: %s", target, fname, e)
             return None
@@ -1437,19 +1473,37 @@ def _format_simulation_context(
             parts.append(f"    {sc.original} -> {sc.dirty}")
 
     if sim.logs:
-        shown_logs = sim.logs[:10]
-        parts.append(f"\nEvents emitted ({len(sim.logs)} total, showing {len(shown_logs)}):")
+        logs = sim.logs
+        # Transfer events restate the token transfers listed above; dropping them leaves the
+        # ten-event budget for the events that say what changed (DebtUpdated, UpdatedMinimumPrice).
+        if sim.asset_changes:
+            logs = [log_entry for log_entry in logs if log_entry.get("name") != "Transfer"]
+        shown_logs = logs[:10]
+        omitted = len(sim.logs) - len(logs)
+        note = f"; {omitted} Transfer events omitted — they restate the token transfers above" if omitted else ""
+        parts.append(f"\nEvents emitted ({len(sim.logs)} total, showing {len(shown_logs)}{note}):")
         for log_entry in shown_logs:
             name = log_entry.get("name", "Unknown")
             inputs = log_entry.get("inputs") or []
             input_strs = [f"{inp.get('soltype', {}).get('name', '?')}={inp.get('value', '?')}" for inp in inputs]
-            parts.append(f"  {name}({', '.join(input_strs)})")
+            # The emitter says which contract changed: a strategy setter whose
+            # UpdatedMinimumPrice came from its Auction also moved the Auction's floor.
+            emitter = _log_emitter(log_entry)
+            origin = f" — emitted by {_annotate_address(emitter, labels)}" if emitter else ""
+            parts.append(f"  {name}({', '.join(input_strs)}){origin}")
 
     return "\n".join(parts)
 
 
+def _log_emitter(log_entry: dict) -> str | None:
+    """Checksummed address of the contract that emitted a Tenderly log, or None."""
+    raw = log_entry.get("raw")
+    address = raw.get("address") if isinstance(raw, dict) else log_entry.get("address")
+    return _checksum_or_none(address) if isinstance(address, str) else None
+
+
 def _simulation_counterparties(sims: list[SimulationResult | None]) -> list[str]:
-    """Distinct non-zero transfer endpoints across successful sims, checksummed, first-seen order."""
+    """Distinct non-zero transfer endpoints, then event emitters, across successful sims; checksummed."""
     seen: set[str] = set()
     out: list[str] = []
     for sim in sims:
@@ -1462,6 +1516,14 @@ def _simulation_counterparties(sims: list[SimulationResult | None]) -> list[str]
                     continue
                 seen.add(checksum)
                 out.append(checksum)
+    for sim in sims:
+        if sim is None or not sim.success:
+            continue
+        for log_entry in sim.logs:
+            emitter = _log_emitter(log_entry)
+            if emitter is not None and emitter not in seen:
+                seen.add(emitter)
+                out.append(emitter)
     return out
 
 
@@ -1667,9 +1729,12 @@ def _build_prompt(
     if protocol_context:
         parts.append(
             "\n--- Protocol Context (verified source, integration references and live on-chain reads) ---\n"
-            "Resolved identities, hashes, decimals, units and current values are VERIFIED facts. "
-            "State supplied facts; do not call them unavailable. Distinguish documented integration "
-            "architecture from live observations.\n" + protocol_context
+            "Values read on-chain before this transaction (identities, hashes, decimals, units, balances, "
+            "settings) are VERIFIED facts: state them, do not call them unavailable. Lines about what the "
+            "calls will do (amounts moved, lots kicked, liquidity, exposure or ratios after the batch) are the "
+            "adapter's model of the batch, not observations: where the Simulation Results differ, the simulation "
+            "wins — say so. Distinguish documented integration architecture from live observations.\n"
+            + protocol_context
         )
 
     if source_contexts:
@@ -1808,7 +1873,41 @@ def _explanation_from_json(data: dict) -> Explanation:
     return Explanation(summary=summary, detail=detail)
 
 
-def _generate_summary(provider: LLMProvider, prompt: str) -> Explanation:
+def _record(
+    stages: list[StageUsage] | None, stage: str, outcome: str, provider: LLMProvider, summary: str = ""
+) -> None:
+    """Append one stage's usage; a failed call reports no usage (``last_usage`` would be stale)."""
+    if stages is not None:
+        usage = provider.last_usage if outcome != "error" else None
+        stages.append(StageUsage(stage, outcome, usage if isinstance(usage, LLMUsage) else None, summary))
+
+
+def _usage_line(stages: list[StageUsage]) -> str:
+    """One log line per alert: each stage's tokens, cache reads and latency, then totals."""
+
+    def tokens(usage: LLMUsage | None) -> tuple[int, int, int, float]:
+        if usage is None:
+            return 0, 0, 0, 0.0
+        return (
+            usage.input_tokens or 0,
+            usage.cached_input_tokens or 0,
+            usage.output_tokens or 0,
+            usage.latency_s,
+        )
+
+    parts = []
+    for stage in stages:
+        inp, cached, out, latency = tokens(stage.usage)
+        parts.append(f"{stage.stage} {stage.outcome} in={inp} cached={cached} out={out} {latency:.1f}s")
+    totals = [tokens(stage.usage) for stage in stages]
+    parts.append(
+        f"total in={sum(t[0] for t in totals)} cached={sum(t[1] for t in totals)} "
+        f"out={sum(t[2] for t in totals)} {sum(t[3] for t in totals):.1f}s"
+    )
+    return " | ".join(parts)
+
+
+def _generate_summary(provider: LLMProvider, prompt: str, stages: list[StageUsage] | None = None) -> Explanation:
     """Stage 1: produce the authoritative summary + risk_tag, preferring structured output.
 
     Uses the provider's JSON-schema path when available (guaranteed-valid risk
@@ -1822,13 +1921,18 @@ def _generate_summary(provider: LLMProvider, prompt: str) -> Explanation:
             data = provider.complete_structured(prompt, SUMMARY_SCHEMA, system_prompt=SYSTEM_INSTRUCTIONS_SUMMARY_JSON)
             explanation = _explanation_from_json(data)
             if explanation.summary:
+                _record(stages, "summary", "ok", provider, explanation.summary)
                 return explanation
+            _record(stages, "summary-structured", "empty", provider)
             logger.warning("Structured summary returned an empty summary; falling back to text")
         except LLMError as e:
+            _record(stages, "summary-structured", "error", provider)
             logger.warning("Structured summary failed (%s); falling back to text", e)
 
     raw = provider.complete(prompt, system_prompt=SYSTEM_INSTRUCTIONS)
-    return _parse_explanation(raw)
+    explanation = _parse_explanation(raw)
+    _record(stages, "summary", "ok" if explanation.summary else "empty", provider, explanation.summary)
+    return explanation
 
 
 def _refine_summary(
@@ -1836,6 +1940,7 @@ def _refine_summary(
     draft: Explanation,
     provider: LLMProvider,
     max_rounds: int = MAX_REFINE_ROUNDS,
+    stages: list[StageUsage] | None = None,
 ) -> Explanation:
     """Iteratively self-critique the summary and revise until PASS or ``max_rounds``.
 
@@ -1852,20 +1957,30 @@ def _refine_summary(
         refine_prompt = (
             f"{original_prompt}\n\n--- Your Previous Draft ---\nTLDR: {draft.summary}\n\n{SUMMARY_REFINE_TASK}"
         )
+        stage = f"critique-{round_num}"
         try:
             raw = provider.complete(refine_prompt, system_prompt=SYSTEM_INSTRUCTIONS)
         except LLMError as e:
+            _record(stages, stage, "error", provider)
             logger.warning("Summary refine round %d failed (%s); keeping draft", round_num, e)
             return draft
 
-        if not raw or not raw.strip() or raw.strip().upper().startswith("PASS"):
+        if not raw or not raw.strip():
+            # No review happened: keep the draft, but don't count it as a PASS.
+            _record(stages, stage, "empty", provider)
+            logger.warning("Summary refine round %d returned nothing; keeping draft", round_num)
+            return draft
+        if raw.strip().upper().startswith("PASS"):
+            _record(stages, stage, "pass", provider)
             logger.info("Summary refine: PASS at round %d/%d", round_num, max_rounds)
             return draft
 
         revised = _parse_explanation(raw)
         if not revised.summary:
+            _record(stages, stage, "empty", provider)
             logger.warning("Summary refine round %d returned empty summary; keeping draft", round_num)
             return draft
+        _record(stages, stage, "revised", provider, revised.summary)
 
         logger.info(
             "Summary refine round %d/%d revised TLDR (%d→%d chars)",
@@ -1880,7 +1995,7 @@ def _refine_summary(
     return draft
 
 
-def _expand_detail(provider: LLMProvider, prompt: str, summary: str) -> str:
+def _expand_detail(provider: LLMProvider, prompt: str, summary: str, stages: list[StageUsage] | None = None) -> str:
     """Stage 2: write the full report *from* the confirmed summary so the two can't disagree.
 
     Returns the detail text (no TLDR/DETAIL headers). Empty string on any LLM error —
@@ -1890,10 +2005,13 @@ def _expand_detail(provider: LLMProvider, prompt: str, summary: str) -> str:
     try:
         raw = provider.complete(detail_prompt, system_prompt=SYSTEM_PROMPT)
     except LLMError as e:
+        _record(stages, "detail", "error", provider)
         logger.warning("Detail expansion failed (%s); leaving detail empty", e)
         return ""
     if not raw or not raw.strip():
+        _record(stages, "detail", "empty", provider)
         return ""
+    _record(stages, "detail", "ok", provider)
     # The model is told to emit bare detail text, but strip stray headers just in case.
     parsed = _parse_explanation(raw)
     return parsed.detail or raw.strip()
@@ -1917,13 +2035,15 @@ def _generate_explanation(
     (metadata header, summary, deterministic call flow, optional protocol
     context, analysis).
     """
-    summary_draft = _generate_summary(provider, prompt)
+    stages: list[StageUsage] = []
+    summary_draft = _generate_summary(provider, prompt, stages)
     if not summary_draft.summary:
-        return summary_draft
+        logger.info("LLM usage (%s): %s", provider.model_name, _usage_line(stages))
+        return replace(summary_draft, stages=tuple(stages))
 
     had_detail = bool(summary_draft.detail)
     if refine:
-        summary_draft = _refine_summary(prompt, summary_draft, provider)
+        summary_draft = _refine_summary(prompt, summary_draft, provider, stages=stages)
 
     # Structured stage 1 (the production path) yields no detail, so we expand it from
     # the confirmed summary — that's the derive-from-summary guarantee. The text
@@ -1932,7 +2052,8 @@ def _generate_explanation(
     # summary rather than resurrecting stale prose.
     detail = summary_draft.detail
     if not detail and (provider.supports_structured_output or had_detail):
-        detail = _expand_detail(provider, prompt, summary_draft.summary)
+        detail = _expand_detail(provider, prompt, summary_draft.summary, stages)
+    logger.info("LLM usage (%s): %s", provider.model_name, _usage_line(stages))
 
     report = ""
     title = ""
@@ -1940,7 +2061,7 @@ def _generate_explanation(
         prose, risk_tag = _split_risk_tag(summary_draft.summary)
         report = build_report(prose, detail, report_ctx, risk_tag)
         title = build_title(report_ctx, risk_tag, fallback=DETAIL_REPORT_TITLE)
-    return Explanation(summary=summary_draft.summary, detail=detail, report=report, title=title)
+    return Explanation(summary=summary_draft.summary, detail=detail, report=report, title=title, stages=tuple(stages))
 
 
 def explain_transaction(

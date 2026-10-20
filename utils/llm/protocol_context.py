@@ -11,8 +11,8 @@ Adapters are responsible for their own guards: each returns an empty list for
 protocols and chains it does not handle, so registration order carries no
 meaning and adding a protocol is one row in ``_ADAPTERS``. Most guard on the
 alert's protocol; the Yearn V3 adapter guards on call shape and an on-chain
-``apiVersion()`` instead (the tokenized-strategy adapter likewise on its
-getters), because the same vault code is governed by Yearn and
+``apiVersion()`` instead (the tokenized-strategy and auction adapters likewise on
+their getters), because the same vault code is governed by Yearn and
 third-party curators alike, and the control-transfer, permission-grant and
 timelock-execution adapters guard on call shape alone, since handing over
 management, opening an allowlist or releasing a timelock operation means the
@@ -73,6 +73,11 @@ from utils.llm.timelock_execution_context import (
     format_timelock_execution_report,
     resolve_timelock_execution_context,
 )
+from utils.llm.yearn_auction_context import (
+    format_yearn_auction_prompt,
+    format_yearn_auction_report,
+    resolve_yearn_auction_context,
+)
 from utils.llm.yearn_strategy_context import (
     format_yearn_strategy_prompt,
     format_yearn_strategy_report,
@@ -122,6 +127,12 @@ _ADAPTERS: tuple[_Adapter, ...] = (
         resolve_yearn_strategy_context,
         format_yearn_strategy_prompt,
         format_yearn_strategy_report,
+    ),
+    _Adapter(
+        "yearn-auction",
+        resolve_yearn_auction_context,
+        format_yearn_auction_prompt,
+        format_yearn_auction_report,
     ),
     _Adapter(
         "control-transfer",
@@ -223,12 +234,21 @@ def resolve_protocol_context(
             continue
         if not contexts:
             continue
+        merged = dict(resolved_labels)
+        for context in contexts:
+            for address, label in context.labels.items():
+                merged.setdefault(address, label)
+        try:
+            prompt = adapter.format_prompt(contexts)
+            report = adapter.format_report(contexts, chain_id, {**(labels or {}), **merged})
+        except Exception as error:  # noqa: BLE001 - rendering must not break the alert either
+            logger.info("Protocol context adapter %s failed to render: %s", adapter.name, error)
+            continue
         for context in contexts:
             addresses.extend(context.addresses)
-            for address, label in context.labels.items():
-                resolved_labels.setdefault(address, label)
-        prompts.append(adapter.format_prompt(contexts))
-        reports.append(adapter.format_report(contexts, chain_id, {**(labels or {}), **resolved_labels}))
+        resolved_labels = merged
+        prompts.append(prompt)
+        reports.append(report)
 
     return ResolvedProtocolContext(
         prompt="\n\n".join(part for part in prompts if part),

@@ -64,7 +64,10 @@ Result: `DecodedCall(function_name="upgradeTo", signature="upgradeTo(address)", 
 For each `(target, function)` pair, fetches the verified source via the Etherscan v2 multichain API and extracts:
 
 - The function's preceding natspec block + signature line. A bare `/// @inheritdoc IFoo` is replaced by the natspec on `IFoo`'s declaration of the same function, found in the same verified bundle — implementations routinely keep every parameter's units in the interface
+- The function body, dedented, when it fits `MAX_BODY_LINES` (30) and `MAX_BODY_CHARS` (2,000). Natspec describes intent and can be stale; the body is what runs. GroveCompounder's natspec says `setMinimumAuctionPrice` records a requirement the Auction must meet, but its body also calls `Auction(auction).setMinimumPrice(...)`. A report that saw only the natspec told signers the auction's pricing was untouched. Bodiless interface declarations are skipped when locating the body. Because the body is presented as what executes, it must be the overload the call decodes to. The decoded signature selects it (source parameter types are matched against the ABI types; contracts, interfaces, enums and structs match any encoding), and contexts are deduplicated per signature. When no definition, or several different ones, match, no body is shown: overloads without a signature, or a base and an override. The verified Auction's `take(address)` uses an unlimited amount and `msg.sender`, and showing it for a `take(address,uint256,address,bytes)` call would misstate the call
 - Declarations + natspec for state variables the function writes
+
+A `/** … */` natspec block may not contain `*/`. With a lazy `[\s\S]*?` the leftmost match began at an earlier function's comment and ran to the block above the target, so the "natspec" for one setter carried every function declared before it.
 
 Vyper sources (every Yearn V3 vault) are handled too: when no Solidity `function` matches, the extractor takes the Vyper `def` with its decorators, full signature (including default values such as `add_to_queue: bool=True`) and the docstring below it. A decorated definition wins over an undecorated `interface` stub of the same name, and CRLF line endings are normalized first. Vyper state-variable writes are not extracted.
 
@@ -116,7 +119,7 @@ Simulates the transaction against current on-chain state to get:
 - **Success/failure** status and gas used
 - **Token transfers** (ERC-20 balance changes). The explainer swaps each transfer's symbol for the token's own on-chain `symbol()` (`_with_onchain_symbols`): Tenderly lowercases symbols it has no curated entry for (`waethusdc` for waEthUSDC), and the model copied them into alerts verbatim. Transfer endpoints are labelled too (`_label_simulation_counterparties`, up to `MAX_SIMULATION_LABEL_LOOKUPS` distinct addresses) and added to the Address Links section. An address that appears only in the simulation, such as a fee receiver, used to reach the prompt as raw hex; a CAP harvest report then told reviewers to "confirm" a recipient that was simply cUSD's FeeAuction
 - **State changes** (storage slot diffs)
-- **Emitted events** (decoded log entries)
+- **Emitted events** (decoded log entries), each with the contract that emitted it (`— emitted by 0x… (Auction)`). Emitters are labelled and linked like transfer endpoints. Without them, an `UpdatedMinimumPrice` emitted by a strategy's Auction read as the strategy's own event
 
 Batch prompts render the first `MAX_PROMPT_SIMULATIONS` successful calls in full. Later calls keep their token transfers and drop only state changes and events, which are what made very large batches overflow the context. Dropping those calls outright hid the last two calls of a 10-call CAP batch, so the report never saw the OndoHolder deposit route into rUSDY.
 
@@ -285,6 +288,19 @@ It then states each proposed value in the vault asset against that state, in bat
 
 `update_debt(strategy, target_debt)` is a **target, not an amount**. `utils/llm/yearn_v3_batch.py` mirrors the vault's `_update_debt` over a running copy of the vault state, so each call's expected amount reflects what the earlier calls in the batch left. Withdrawals keep `minimum_total_idle` and are capped by what the strategy can redeem. On deposits, the target is capped by `max_debt` and the amount by the strategy's `maxDeposit` and by idle above `minimum_total_idle`. The model also covers shutdown, the "new debt equals current debt" revert and inactive strategies. Each line gives the amount moved, what limited it, and the vault's idle before → after. Previously the line printed `target − current_debt` and the pre-batch idle. A Cap batch that withdrew 26.9M USDC from two Morpho strategies and set Aave's target to 50M was then reported as "deposits 50,000,000 USDC; idle now 0 USDC", and the model flagged a funding gap that cannot exist; the vault deposits the 26.93M it holds. The default queue is tracked through the batch too: `add_strategy(…, true)` appends to it and a revoke removes from it. A later `set_default_queue` is therefore compared against the queue as the batch left it, and any strategy it drops that still holds debt is named with that debt. Yearn's yETH recovery batch (Strategist Safe nonce 3356) registered and funded Flex WETH with 100 WETH, then restored the original queue, leaving Flex funded but out of default withdrawals. The semantics line also spells out `use_default_queue`: `False` only permits custom withdrawal queues, and ordinary withdrawals still use the default queue. A report had called a queue reorder inert because the flag was false. The system prompt treats a unit the Protocol Context states as verified, so the model normalizes `max_debt` without hedging. Failures are best-effort and never block the governance alert.
 
+**DebtAllocator calls.** Debt is usually moved through a `DebtAllocator`, so its `update_debt(vault, strategy, target_debt)` is read as the vault's own `update_debt(strategy, target_debt)`. The allocator call is keeper-gated, forwards with its `maxDebtUpdateLoss`, and runs `process_report` first for a zero target. The context states the allocator and its `maxDebtUpdateLoss`. Before this, a Strategist Safe rebalance made entirely of allocator calls (nonce 3373) got no vault context at all.
+
+**Vaults that hold one another.** A batch can move debt between vaults where one is the other's strategy. In nonce 3373, yvWETH-2 redeemed 270 WETH from yvWETH-1 and moved it into a looper; yvWETH-1 then withdrew 270 WETH from that looper back into Yearn OG WETH. Calls are therefore walked in one global batch order across every vault (`walk_batch`), and each flow is also applied to the inner vault:
+- a deposit lands in the inner vault's idle. With `auto_allocate`, the vault then runs `_update_debt(first queue strategy, max)`, as on-chain: within that strategy's `max_debt` and `maxDeposit`, and moving all idle above `minimum_total_idle`, not just the new deposit;
+- a redemption is served from the inner vault's idle, then from its default queue in order, capped by what each strategy can return now (these limits are read for every queue strategy of a vault that another vault redeems from);
+- before each call, a parent's limit on redeeming from an inner vault is reset to `min(current_debt, the inner vault's exit liquidity now)`. The pre-batch `maxRedeem` goes stale once an earlier call moves the inner vault's idle or queue debt. `maxRedeem` is also owner-specific: a `withdraw_limit_module` can hold one holder below the vault's liquidity, even to 0. A pre-batch limit below `min(position, liquidity)` is therefore kept as a cap (less what the batch redeems), so the refresh can't raise it. A limit the position explains is not a cap: an empty position reads 0 under any module. If the batch deposits into a vault where such a cap exists, the new limit is unknowable. A later redemption from it is then described as "would withdraw up to X", and from that call on, neither vault's later calls nor their after-batch liquidity, exposure or ratios are forecast. Crediting a guessed amount would have made every later balance a guess.
+
+The inner vault's later calls then start from that state. In nonce 3373, yvWETH-1's stETH Accumulator could return nothing, so the redemption drew Yearn OG WETH from 677.20 to 407.20, and call 4 refilled it to 677.20, not 947.20. A held vault the batch never calls is read only for its side of the flow and gets no section of its own. Two further lines:
+- A deposit into a strategy outside the default queue says the funds are off the withdrawal path.
+- **Exit liquidity** before → after: idle plus what each default-queue strategy can return now. This is what ordinary withdrawals can get. In nonce 3373 it fell from 571.29 to 301.29 WETH (38.2% → 20.1%): the 270 WETH went to a strategy outside the queue, and the 924 WETH accumulator could return nothing. An outside review rated that MEDIUM; ours said LOW without mentioning it. The system prompt now treats a sharp cut (a third or more), or funds reachable only by a manual `update_debt`, as at least MEDIUM.
+- **DebtAllocator config** for each pair the batch moves through an allocator (`getStrategyConfig`). A pair with no config (`added = false`) is ignored by automated debt updates. A configured pair compares its target/max ratio with the debt ratio the batch leaves, using the vault's totalAssets after any redemption.
+- A vault that holds another vault shows its look-through exposure before → after. A V3 vault keeps no on-chain list of its strategies: only its default queue and the strategies the batch names are known. The rest of its totalAssets (minus idle) is therefore its own bucket ("holdings outside its default queue and this batch"), with a note that it may include strategies listed above, instead of being silently dropped: direct debt plus a pro-rata share of each held vault's strategies. The report had called nonce 3373 a shift "from indirect to direct exposure"; yvWETH-2's looper exposure actually went from 70.53 to 294.60 WETH (4.7% → 19.7%).
+
 ### 5f-3. Control Transfer Context (`utils/llm/control_transfer_context.py`)
 
 A call such as `set_management(0xac7D…)` names the new controller by address only. Whether that address is a 6-of-9 multisig, a contract run by a 2-of-4 multisig, or a single key decides how serious the change is. A report once called moving a Funding Distributor from Yearn's 6-of-9 Safe to an Executor contract (managed by a 2-of-4 Safe, with an operator whitelist) just a "pending management handover".
@@ -330,7 +346,38 @@ For calls on a target that answers `apiVersion()` 3.x, `management()`, `lastRepo
 
 1. **Reads the settings**: management, keeper, emergency admin, performance fee and its recipient, unlock time, last report, shutdown, and the deposit gate (`openDeposits()` / `open()`).
 2. **Walks the batch in order** and renders each change as old → new: emergency admin, fee recipient (noting a 0% fee pays nothing), performance fee, keeper, the deposit gate, and the current → new custom trigger with the new trigger's `minReportDelay()`. A `report()` says whether its profit unlocks over time or lands at once, using the unlock time set earlier in the batch. Setters declared in the strategy's own source, such as `setAllowed`, are left to the generic before-state reader.
+`report()` transfers (reward claims, auction kicks, redeposits) are explained once per section rather than once per strategy.
+
 3. **Explains an unlock time of 0** in full. The strategy burns every share it holds for itself, split into still-locking and already-unlocked shares. The not-yet-unlocked profit is credited to holders at once, with the asset amount and the price-per-share change. From then on each report's profit lands instantly, so the adapter also states who may deposit.
+
+### 5f-3d. Yearn Auction Context (`utils/llm/yearn_auction_context.py`)
+
+Yearn strategies sell reward tokens through a periphery `Auction`: a Dutch auction that offers its **whole balance** of a token on each kick. A lot's total price starts at `startingPrice` and decays `stepDecayRate` bps every `stepDuration` seconds. The lot ends after `auctionLength`, or once the per-token price falls below `minimumPrice`, and whatever is unsold stays in the auction for the next kick. None of this is in the calldata. A Safe batch ran `setMinimumAuctionPrice` + `report()` on two Grove compounders, and its report got three things wrong:
+- It said the auction's pricing was untouched; the strategy setter forwards to `Auction.setMinimumPrice`.
+- It described a 284k GROVE lot; the auction still held 698k GROVE unsold, so the lot was 983k.
+- It could not say what the 880 USDS booked as profit was; it was proceeds of an earlier lot that sold out.
+
+The adapter handles calls on a strategy that answers `auction()` (`report`, `kickAuction`, `setMinAmountToSell`, `setAuction`, and any call with "auction" in its name), and calls on an Auction itself (`setMinimumPrice`, `setStartingPrice`, `setStepDecayRate`, `setStepDuration`, `setReceiver`, `kick`, `sweep`, `enable`, `disable`, `setGovernanceOnlyKick`). An address counts as an Auction when it answers `want()`, `startingPrice()` and `getAllEnabledAuctions()`. For each auction the adapter does three things:
+
+1. **Reads the settings and each enabled lot**: receiver, governance, version, and the pricing settings above. Per lot, it reads the balance pending in the auction (live, or unsold from an expired lot), what the strategy holds and can claim (`claimableRewards()`, only when the auction sells a single token), `minAmountToSell`, and the strategy's idle want with its share of `totalAssets`.
+2. **Prices each lot against the market**: DeFiLlama USD prices for the token and want (`utils/defillama.defillama_key`). The floor is then stated as above or below market. Takers don't buy above market, so a floor above it leaves lots unsold.
+3. **Walks the batch in order**:
+   - Setters render as old → new; the floor change gives its relative size and its position against the market.
+   - A kick (direct, or `report()`/`kickAuction()` on the strategy) renders the lot it would offer (unsold + held + claimable), what the whole lot clears for at the floor in force at that point and at market, and how long the decay takes to reach the floor. It flags a strategy whose balance is below `minAmountToSell`.
+   - A `sweep` says the tokens leave the sale; a new receiver says proceeds stop reaching the strategy.
+
+Each lot is carried through the batch, not just the settings:
+- **Liveness:** recomputed with `Auction._price` under the running settings. Lowering the floor can revive a lot whose decayed price had fallen below the old floor; a later strategy `report()` then does not kick, and its claimed rewards stay in the strategy. A pricing or receiver setter that runs while a lot is live is flagged: Auction 1.0.5 rejects it (`active auction`).
+- **Gate:** `setMinAmountToSell` updates the strategy's threshold. A report whose balance after claiming does not exceed it is shown as not kicking.
+- **Sweeps:** a `sweep` empties the lot, so a later direct kick of nothing reverts.
+- **`disable` / `enable`:** `disable` deletes the lot's state, as `delete auctions[_from]` does on-chain. A live lot then stops blocking setters, and a later kick of that token reverts (`not enabled`). `enable` of an enabled token reverts (`already enabled`).
+- **Out-of-range setter values** (Auction 1.0.5: `startingPrice ≤ 1e9`, decay outside 1–9,999 bps, step duration outside 0–auction length, zero receiver) are described as reverting and leave the settings unchanged. The timing math also guards against a zero or 100% decay on other versions.
+- **Kicks:** a kick resets the lot to the kicked size. The kick's floor proceeds, opening price and time to the floor use the settings in force at that call.
+- **`setAuction`:** routes the strategy's later calls to the new auction, or drops them if it is not a readable Auction. The strategy's held and claimable balances and its `minAmountToSell` thresholds are one shared state per token across all its auctions. Calls from every auction are replayed in transaction order (`walk_auctions`), so `kickAuction` → `setAuction` → `kickAuction` doesn't sell the same tokens twice, a threshold raised before the switch still gates the new auction, and A → B → A attributes each kick to the right auction.
+
+Direct Auction calls take their subject from the first argument; `disable(address,uint256)` appends an index. The strategy's idle want is stated neutrally: a sold lot is one possible source only when the auction pays the strategy.
+
+A strategy setter counts as an auction setter only when its verified body passes the argument straight through (`Auction(auction).setMinimumPrice(_x)`). The name alone is never trusted. Likewise, a `report()` is said to kick only when the strategy's verified `_harvestAndReport` body mentions a kick. Otherwise the line is hedged ("may kick"), because some strategies kick only through a separate keeper call. A failed DeFiLlama call drops the market lines and nothing else.
 
 ### 5f-4. PendleSwap Upgrade Context (`utils/llm/pendle_context.py`)
 
@@ -359,20 +406,39 @@ verdict is not evidence that collisions are more likely.
 
 ### 5g. Adapter Registry (`utils/llm/protocol_context.py`)
 
-Adapters register in `_ADAPTERS`; `resolve_protocol_context()` fans one call out to all of them and merges the rendered prompt text, report text, introduced addresses, and address labels. Each adapter guards itself, so registration order carries no meaning and one adapter raising is logged and skipped rather than dropping the alert. Most guard on protocol and chain. The Yearn V3 adapter guards on call shape and `apiVersion()`; the tokenized-strategy adapter on call shape and the strategy getters. The control-transfer, allowlist-scope and timelock-execution adapters guard on call shape alone.
+Adapters register in `_ADAPTERS`; `resolve_protocol_context()` fans one call out to all of them and merges the rendered prompt text, report text, introduced addresses, and address labels. Each adapter guards itself, so registration order carries no meaning. An adapter that raises, while resolving or while rendering, is logged and skipped (with its addresses and labels) rather than dropping the alert. Most guard on protocol and chain. The Yearn V3 adapter guards on call shape and `apiVersion()`; the tokenized-strategy and auction adapters on call shape and their getters. The control-transfer, allowlist-scope and timelock-execution adapters guard on call shape alone.
 
 Adapters receive the inner calls of executed governance wrappers too. `expand_executed_calls()` keeps each wrapper and splices in its decoded inner calls (`execute`, `executeBatch`, `executeTransaction`, up to two levels deep). Address labels are collected over the same list. Scheduling wrappers are not expanded, because their inner calls run in a later transaction. Before this, a Safe batch registered Flex inside a timelock `executeBatch` and then funded it in a top-level `update_debt`. The V3 adapter never saw the registration and reported the funding call as "REVERTS — inactive strategy". The model then flagged the context as contradicting the simulation. The executing address (the Safe) is labeled as well, so it no longer appears unlabeled in the reference table.
 
 ### 6. LLM Prompt & Completion (`utils/llm/ai_explainer.py`)
 
-The prompt is split into a **system** prompt (static instructions) and a **user** prompt (per-tx context). `complete(prompt, system_prompt=...)` passes the system block via the provider's native system role, which improves instruction-following and lets the Anthropic provider mark it `cache_control: ephemeral` — repeated alerts within the cache window pay for the (large) instruction prompt only once. The static block (`SYSTEM_INSTRUCTIONS`) enforces brevity:
+The prompt is split into a **system** prompt (static instructions) and a **user** prompt (per-tx context).
+
+**Measuring cost.** Each provider records the latest call's `LLMUsage`: input tokens (cached ones included), cached input, cache writes, output, and latency. The explainer keeps one `StageUsage` per call on `Explanation.stages`: `summary`, `critique-N` (`pass`, `revised` with the revised TLDR, or `empty` when the critic returned nothing and the draft was kept) and `detail`. It logs one line per alert: `LLM usage (<model>): summary ok in=… cached=… out=… 8.1s | critique-1 pass … | detail ok … | total …`.
+
+Venice applies automatic prefix caching and reports it as `prompt_tokens_details.cached_tokens`. Anthropic reports cache reads and writes separately; the provider folds them into the same fields.
+
+Measured on two Strategist Safe batches pinned to their alert blocks (8 runs, Venice deepseek-v4-flash at $0.138/M input, $0.028/M cached, $0.275/M output):
+- about **$0.003 and 48 s per alert**;
+- the detail stage takes 69% of the latency;
+- every critique passed in round 1.
+
+The stages use different system prompts (JSON note, format reminder, none), so the shared context is cached only between identical prefixes.
+
+**Keeping the context lean.** Each LLM call resends the whole context, so repetition costs on every call:
+- Semantics shared by every vault or auction (V3 `update_debt` and queue rules, Dutch-auction mechanics) are stated once per Protocol Context section; each vault or auction keeps only its own numbers.
+- Simulation results drop `Transfer` events when token transfers are listed, since they restate them.
+- The preamble separates values read on-chain (verified) from the adapters' forecasts (amounts moved, lots, after-batch liquidity, exposure and ratios). Where the simulation differs, the simulation wins.
+
+The auction mechanics are worded as they work: takers buy near market as the price falls, and the floor only bounds an unbid lot. A loss-framed sentence ("the gap is the most a sale can give away") tipped a routine floor change to MEDIUM in 3 of 4 samples; the baseline did so in 1 of 4. Measure changes like these on pinned historical batches (an anvil fork at the alert block, Tenderly at that block, historical prices), with several samples per side: risk tags vary from run to run. `complete(prompt, system_prompt=...)` passes the system block via the provider's native system role, which improves instruction-following and lets the Anthropic provider mark it `cache_control: ephemeral` — repeated alerts within the cache window pay for the (large) instruction prompt only once. The static block (`SYSTEM_INSTRUCTIONS`) enforces brevity:
 
 - Starts with a verb, no "This transaction…" preamble
 - Trailing risk tag in caps (LOW / MEDIUM / HIGH / CRITICAL)
 - Summary is plain text (it goes to Telegram); the detail is markdown and must render **every address as a block-explorer hyperlink**, copied verbatim from the prompt's `--- Address Links ---` section so the model never assembles an explorer URL or picks the wrong chain's explorer
 - Refuses to assume parameter units from function name alone; uses the Related Tokens section's decimals when exactly one token resolves, and hedges only when zero or several do. An ambiguous value is quoted raw — no assumed-scale figure such as "at 1e18" in the summary, where it read a ~500k USDC commitment as dust — with candidate decimals discussed only in the detail
 - Treats token-denominated amounts in the Protocol Context as authoritative, and the self-critique pass accepts them as supported units
-- Trusts source-context natspec over prior assumptions
+- Trusts source-context natspec over prior assumptions, and a shown function body over the natspec. An external call in the body changes the other contract too. A natspec claim about what other code enforces is unverified unless that code is shown
+- Explains a pattern repeated across contracts once, then gives each contract's own numbers
 - Takes a unit stated by a Protocol Context section as verified, even when Related Tokens lists several candidates
 - Never calls a contract audited, low-fee, or safe unless a prompt section says so — a label is not evidence
 - Quotes concrete before→after deltas when state reads are available
@@ -664,9 +730,10 @@ utils/llm/
 ├── threejane_abi.py         # 3Jane checked-in ABIs + verified-ABI probes (proxy-aware)
 ├── threejane_account_context.py # 3Jane LCC bounces and USD3 supply-cap exemptions
 ├── threejane_context.py     # 3Jane adapter: hashed config keys/roles, rewards distribution mode
-├── yearn_v3_context.py      # Yearn V3 adapter: vault state, queue, strategy caps in asset units
-├── yearn_v3_batch.py        # Yearn V3 _update_debt model: expected amounts through a batch
+├── yearn_v3_context.py      # Yearn V3 adapter: vault state, queue, caps, DebtAllocator calls, look-through exposure
+├── yearn_v3_batch.py        # Yearn V3 _update_debt model: expected amounts through a batch, flows into inner vaults
 ├── yearn_strategy_context.py # Yearn tokenized strategies: settings old → new, unlock-time burn, deposit gate
+├── yearn_auction_context.py # Yearn Auctions: floor vs market, pending lots, kick size, idle proceeds
 ├── control_transfer_context.py # Who gains control: current vs new holder, Safe thresholds, two-step
 ├── permission_grant_context.py # Allowlist scope: gated entry points, arbitrary-call forwarders, holder
 ├── timelock_execution_context.py # Timelock execute calls: operation ID, delay, scheduled/ready status
@@ -674,7 +741,7 @@ utils/llm/
 
 utils/eth_view.py            # One raw eth_call view read, None when the getter is missing or reverts
 utils/related_tokens.py      # Token discovery from a contract's own zero-arg address getters
-utils/source_context.py      # Etherscan v2 source fetch + natspec extractor + proxy follow
+utils/source_context.py      # Etherscan v2 source fetch + natspec / short-body extractor + proxy follow
 utils/verified_contract.py   # Structured verified record: per-file sources, settings, ABI, target
 utils/on_chain_state.py      # Before-state reader (auto-generated getters, mappings, diamond storage)
 utils/proxy.py               # Impl resolution (EIP-1967, zeppelinos, beacon, getters), EIP-1167 clone decode, upgrade detection (direct + nested), alert lines
