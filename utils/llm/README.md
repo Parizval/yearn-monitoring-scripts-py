@@ -678,7 +678,7 @@ The CLIs run on their own login/subscription, so the metered API key is only spe
 
 **Security note.** Both CLIs run as full agents with approvals disabled, and the prompt carries attacker-influenced text (proposal descriptions, verified source, labels). A prompt injection could make the agent run shell commands as the monitoring user. Only enable the CLIs on a host where that is acceptable, or set `LLM_CLI_PROVIDERS=none`.
 
-**Deployment.** `deploy/systemd/monitoring.service` sets `PATH=<repo>/.venv/bin:/usr/local/bin:/usr/bin:/bin` and `ProtectHome=read-only`. A CLI installed under `~/.local/bin` is therefore not found, and both CLIs need write access to their home config dirs (`~/.codex`, `~/.claude`). As shipped, the VPS keeps using the API provider until the unit is adjusted.
+**Deployment.** `deploy/systemd/monitoring.service` puts `~/.local/bin` on `PATH`, where both CLIs install. It keeps `ProtectHome=read-only` but makes the CLIs' state writable (`~/.codex`, `~/.claude`, `~/.claude.json`), since Codex refuses to start on a read-only home (`Read-only file system (os error 30)`). Those paths are optional (`-` prefix), so a host without the CLIs still starts and uses the API provider. To use a CLI on the VPS, install it and log in as the deploy user (`codex login`, `claude login`), then re-run `deploy/install.sh` or re-render the unit and run `sudo systemctl daemon-reload && sudo systemctl restart monitoring`. To stay on the API, set `LLM_CLI_PROVIDERS=none`.
 
 ### Supported API Providers
 
