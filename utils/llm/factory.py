@@ -1,8 +1,17 @@
 """Factory for creating LLM provider instances from environment configuration.
 
+Providers are tried in order: local agent CLIs first (they run on the CLI's own
+login/subscription), then the API provider. CLIs that aren't installed are
+skipped; a CLI that fails (no credits, auth, timeout) falls through to the next.
+
 Environment variables:
-    LLM_PROVIDER: Provider name (default: "venice").
-    LLM_API_KEY: API key for the provider (required).
+    LLM_CLI_PROVIDERS: Comma-separated CLI order (default: "codex,claude").
+        Set to "none" to use the API provider only.
+    LLM_CLI_TIMEOUT: Seconds per CLI completion (default: 300).
+    LLM_CODEX_MODEL / LLM_CLAUDE_MODEL: Optional model override per CLI; unset
+        uses the CLI's own configured default.
+    LLM_PROVIDER: API provider name (default: "venice").
+    LLM_API_KEY: API key for the provider. Optional when a CLI is available.
     LLM_BASE_URL: Base URL for the API (not needed for anthropic).
     LLM_MODEL: Model identifier to use.
     LLM_STRUCTURED_OUTPUT: "true"/"false" to force JSON-schema structured output
@@ -17,6 +26,7 @@ Provider defaults:
 """
 
 import os
+import shutil
 
 from utils.llm.base import LLMError, LLMProvider
 from utils.logger import get_logger
@@ -97,23 +107,51 @@ def _create_provider(
     return OpenAICompatProvider(api_key=api_key, base_url=base_url, model=model, structured_output=structured_output)
 
 
-def get_llm_provider() -> LLMProvider:
-    """Create or return the cached LLM provider based on environment variables.
+# CLI providers tried before the API, in this order unless LLM_CLI_PROVIDERS overrides it.
+_DEFAULT_CLI_ORDER = "codex,claude"
+# Disabling values for LLM_CLI_PROVIDERS.
+_CLI_DISABLED_VALUES = ("", "none", "off", "false", "0")
 
-    Returns:
-        Configured LLMProvider instance.
 
-    Raises:
-        LLMError: If LLM_API_KEY is not set.
-    """
-    global _instance
-    if _instance is not None:
-        return _instance
+def _cli_providers() -> list[LLMProvider]:
+    """Build the CLI providers named in LLM_CLI_PROVIDERS whose binaries are on PATH."""
+    from utils.llm.cli_provider import DEFAULT_CLI_TIMEOUT_SECONDS, ClaudeCLIProvider, CodexCLIProvider
 
+    raw = os.getenv("LLM_CLI_PROVIDERS")
+    order = _DEFAULT_CLI_ORDER if raw is None else raw
+    if order.strip().lower() in _CLI_DISABLED_VALUES:
+        return []
+
+    timeout_raw = os.getenv("LLM_CLI_TIMEOUT", "").strip()
+    try:
+        timeout = int(timeout_raw) if timeout_raw else DEFAULT_CLI_TIMEOUT_SECONDS
+    except ValueError:
+        logger.warning("Invalid LLM_CLI_TIMEOUT %r; using %ds", timeout_raw, DEFAULT_CLI_TIMEOUT_SECONDS)
+        timeout = DEFAULT_CLI_TIMEOUT_SECONDS
+
+    providers: list[LLMProvider] = []
+    for name in (n.strip().lower() for n in order.split(",")):
+        if not name:
+            continue
+        if name not in ("codex", "claude"):
+            logger.warning("Unknown CLI provider %r in LLM_CLI_PROVIDERS; skipping", name)
+            continue
+        binary = shutil.which(name)
+        if not binary:
+            logger.info("%s CLI not found on PATH; skipping", name)
+            continue
+        model = os.getenv(f"LLM_{name.upper()}_MODEL", "")
+        cls = CodexCLIProvider if name == "codex" else ClaudeCLIProvider
+        providers.append(cls(binary=binary, model=model, timeout=timeout))
+    return providers
+
+
+def _api_provider() -> LLMProvider | None:
+    """Build the API provider from LLM_* env vars, or None when LLM_API_KEY is unset."""
     provider_name = (os.getenv("LLM_PROVIDER") or "venice").lower()
     api_key = os.getenv("LLM_API_KEY")
     if not api_key:
-        raise LLMError("LLM_API_KEY environment variable is not set")
+        return None
 
     defaults = _PROVIDER_DEFAULTS.get(provider_name, {})
     model = os.getenv("LLM_MODEL") or defaults.get("model", "")
@@ -128,7 +166,46 @@ def get_llm_provider() -> LLMProvider:
     structured_output = _env_bool("LLM_STRUCTURED_OUTPUT", _STRUCTURED_OUTPUT_DEFAULTS.get(provider_name, False))
 
     logger.info("Creating LLM provider: %s (model=%s, structured=%s)", provider_name, model, structured_output)
-    _instance = _create_provider(provider_name, api_key, model, base_url, structured_output)
+    return _create_provider(provider_name, api_key, model, base_url, structured_output)
+
+
+def get_llm_provider() -> LLMProvider:
+    """Create or return the cached LLM provider based on environment variables.
+
+    Returns:
+        The API provider alone when no CLI is available, otherwise a
+        ``FallbackProvider`` chaining the CLIs and the API provider in priority order.
+
+    Raises:
+        LLMError: If no CLI is available and the API provider is unset or fails to initialize.
+    """
+    global _instance
+    if _instance is not None:
+        return _instance
+
+    providers = _cli_providers()
+    if not providers:
+        api = _api_provider()
+        if api is None:
+            raise LLMError("No LLM CLI (codex/claude) found and LLM_API_KEY environment variable is not set")
+        _instance = api
+        return _instance
+
+    # A broken API config (missing SDK, no base URL) must not block working CLIs;
+    # it only costs the last-resort fallback.
+    try:
+        api = _api_provider()
+    except LLMError as e:
+        logger.warning("API LLM provider unavailable, continuing with CLIs only: %s", e)
+        api = None
+    if api is not None:
+        providers.append(api)
+
+    from utils.llm.fallback import FallbackProvider
+
+    # Always wrap CLIs, even a lone one, so a CLI that's out of credits or timing
+    # out is disabled after its first failure instead of retried on every call.
+    _instance = FallbackProvider(providers)
     return _instance
 
 
