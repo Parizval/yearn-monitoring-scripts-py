@@ -639,7 +639,7 @@ All configuration is via environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_CLI_PROVIDERS` | `codex,claude` | Local agent CLIs tried before the API, in order. `none` disables them (see [Provider Order](#provider-order-cli-first-then-api)) |
+| `LLM_CLI_PROVIDERS` | `none` | Explicit CLI opt-in: `codex`, `claude`, or `codex,claude`; `none` uses the API only (see [Provider Order](#provider-order-cli-first-then-api)) |
 | `LLM_CLI_TIMEOUT` | `300` | Seconds per CLI completion before it counts as unavailable |
 | `LLM_CODEX_MODEL` | *(CLI default)* | Model passed to `codex exec --model` |
 | `LLM_CLAUDE_MODEL` | *(CLI default)* | Model passed to `claude --model` |
@@ -659,26 +659,29 @@ All configuration is via environment variables:
 
 `get_llm_provider()` builds a chain and tries it in order:
 
-1. **Codex CLI**: `codex exec --yolo` (approvals and sandbox off), prompt on stdin, `--output-schema` for structured output.
-2. **Claude Code CLI**: `claude -p --dangerously-skip-permissions --output-format json`, system prompt via `--system-prompt-file`, `--json-schema` for structured output.
+1. **Codex CLI** (when opted in): `codex exec --sandbox read-only --json`, prompt on stdin, `--output-schema` for structured output. Shell, browser, image, handoff, apps, plugins, hooks, web search and MCP servers are disabled.
+2. **Claude Code CLI** (when opted in): `claude -p --permission-mode dontAsk --tools "" --output-format stream-json`, system prompt via `--system-prompt-file`, `--json-schema` for structured output. Built-in tools and MCP servers are disabled.
 3. **API provider** from `LLM_PROVIDER` / `LLM_API_KEY` (below).
 
-The CLIs run on their own login/subscription, so the metered API key is only spent when both are out of credits or broken. Details:
+The API provider is used by default. When CLIs are explicitly enabled, they run on their own login/subscription, so the metered API key is only spent when those CLIs are out of credits or broken. Details:
 
 - A CLI is skipped when its binary isn't on `PATH`. With nothing on `PATH` and no API key, the factory raises `LLMError` and alerts ship without an AI summary, as before.
 - An API provider that fails to initialize (SDK not installed, no `LLM_BASE_URL` for a custom provider) is logged and dropped when a CLI is available, so it can't block the CLIs. With no CLI, the error is raised as before.
 - The CLIs get exactly the same context as the API: the full per-transaction prompt (decoded calldata, source, before-state, simulation, protocol adapters) and the same system prompts. Only the transport differs.
 - Each call runs in a fresh temp directory, so neither agent loads this repo's AGENTS.md/CLAUDE.md. Host-level agent config is stripped where the CLI supports it:
-  - Claude: `--setting-sources "" --disable-slash-commands --strict-mcp-config --no-session-persistence` (no user rules/CLAUDE.md, skills, or MCP servers).
-  - Codex: `--ephemeral --skip-git-repo-check --disable apps --disable plugins`, plus `--config mcp_servers.<name>.enabled=false` for every server `codex mcp list --json` reports (listed once per process). `--config mcp_servers={}` does **not** work: codex merges overrides into the loaded config, so existing servers stay enabled. The `-c` parser can't address a server name with dots or other non-`[A-Za-z0-9_-]` characters, so such a name, or a failed listing, fails closed: Codex is marked unavailable and the chain moves on. Codex has no supported switch for the global `~/.codex/AGENTS.md` or `~/.agents/skills`, so keep those empty for the user that runs monitoring.
+  - Claude: `--setting-sources "" --disable-slash-commands --strict-mcp-config --no-session-persistence --tools ""`. `--strict-mcp-config` with no `--mcp-config` loads no MCP servers, and `--tools ""` removes the built-in tools.
+  - Codex: `--ephemeral --ignore-user-config --ignore-rules --strict-config --sandbox read-only`, feature disables, `web_search="disabled"` and `cli_auth_credentials_store="auto"`. Ignoring the user config keeps its MCP server definitions from loading; the credential store setting is passed again because ignoring the config also drops it, and the file-only default misses a login kept in the OS keyring. Keep global `~/.codex/AGENTS.md` and `~/.agents/skills` empty for the monitoring user; the CLI has no supported switch to suppress them.
+- Both CLIs are text-only summarizers. The app gathers all chain data (decoded calls, source, state, simulation, protocol adapters) before the call; if a summary needs more, add the read to the context gathering rather than giving the agent a tool.
+- The child receives only process basics and its CLI authentication variables. RPC, Etherscan, Telegram, Tenderly and application LLM API credentials are omitted.
+- Codex JSONL and Claude stream JSON are inspected after each run. Any tool event marks that CLI unavailable and uses the next provider; Codex's `todo_list` plan items and Claude's internal `StructuredOutput` formatting event (schema-constrained responses only) are not tools. Non-JSON lines such as CLI warnings are skipped; output with no events or no final result fails only that call.
 - A non-zero exit, timeout, missing binary, or Claude `is_error` result (auth, rate limit, no credits) raises `LLMUnavailableError`. `FallbackProvider` then drops that CLI **for the rest of the process**, so a dead CLI isn't retried on every stage of every alert. CLIs are always wrapped in `FallbackProvider`, even a lone one with no API key, so this tracking applies there too. A bad response (empty text, invalid JSON) only falls through for that one call.
 - Each CLI runs as the leader of its own process group. The whole group is SIGKILLed on timeout and after the CLI exits, so commands the agent spawned can't outlive the call. Output goes to temp files, not pipes, so a backgrounded child holding stdout can't stall a finished call until the timeout.
 - Codex has no system-prompt flag, so the system prompt is prepended to the stdin prompt in a `<system_instructions>` block.
 - The log line `AI summary using <model>` names the provider that actually answered (`codex-cli`, `claude-cli`, or the API model).
 
-**Security note.** Both CLIs run as full agents with approvals disabled, and the prompt carries attacker-influenced text (proposal descriptions, verified source, labels). A prompt injection could make the agent run shell commands as the monitoring user. Only enable the CLIs on a host where that is acceptable, or set `LLM_CLI_PROVIDERS=none`.
+**Security note.** The prompt contains attacker-influenced text (proposal descriptions, verified source, labels). With no tools, an injection can only change the summary text, not run commands or make requests. The tool restrictions are CLI flags, so a CLI update that changes their meaning would weaken them; event auditing detects unexpected tool calls after the fact and cannot undo one. Both CLIs still run as the monitoring service's Unix user. Keep `LLM_CLI_PROVIDERS=none` until tested in the target service.
 
-**Deployment.** `deploy/systemd/monitoring.service` puts `~/.local/bin` on `PATH`, where both CLIs install. It keeps `ProtectHome=read-only` but makes the CLIs' state writable (`~/.codex`, `~/.claude`, `~/.claude.json`), since Codex refuses to start on a read-only home (`Read-only file system (os error 30)`). Those paths are optional (`-` prefix), so a host without the CLIs still starts and uses the API provider. To use a CLI on the VPS, install it and log in as the deploy user (`codex login`, `claude login`), then re-run `deploy/install.sh` or re-render the unit and run `sudo systemctl daemon-reload && sudo systemctl restart monitoring`. To stay on the API, set `LLM_CLI_PROVIDERS=none`.
+**Deployment.** `deploy/systemd/monitoring.service` puts `~/.local/bin` on `PATH`, where both CLIs install. It keeps `ProtectHome=read-only` but makes the CLIs' state writable (`~/.codex`, `~/.claude`, `~/.claude.json`), since Codex refuses to start on a read-only home (`Read-only file system (os error 30)`). Those paths are optional (`-` prefix), so a host without the CLIs still starts and uses the API provider. To use a CLI on the VPS, install it and log in as the deploy user (`codex login`, `claude login`), then re-run `deploy/install.sh` or re-render the unit and run `sudo systemctl daemon-reload && sudo systemctl restart monitoring`. Set `LLM_CLI_PROVIDERS=codex` or `claude` only for an explicit trial; unset it or use `none` for API-only operation.
 
 ### Supported API Providers
 
@@ -716,7 +719,7 @@ utils/llm/
 ├── ai_explainer.py          # Orchestrator: decode → fetch context → prompt → explain
 ├── anthropic_provider.py    # Anthropic (Claude) native API provider
 ├── base.py                  # Abstract LLMProvider base class + LLMError / LLMUnavailableError
-├── cli_provider.py          # Codex (`codex exec --yolo`) and Claude Code (`claude -p`) CLI providers
+├── cli_provider.py          # Tool-free Codex and Claude Code CLI providers
 ├── credits.py               # Venice low-balance alert, run at the start of Safe/timelock monitors
 ├── factory.py               # Provider factory: CLI-first chain from env config + singleton
 ├── fallback.py              # FallbackProvider: tries providers in order, drops unavailable ones
