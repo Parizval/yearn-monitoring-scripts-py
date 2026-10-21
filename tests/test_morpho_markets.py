@@ -588,10 +588,18 @@ class TestMorphoRiskLookup(unittest.TestCase):
 
     def test_robinhood_stonk_vault_markets_are_tiered(self) -> None:
         spy = "0x50bc39b5722fb5634c436d74c6787f3c125b879e7b73cf9e9ecc01bbb57b8e55"
+        spy_77 = "0xeb1739b2a69dd22a4285d366a06698a01018b37c24d2994fefe19cc72f313613"
         nvda = "0x66306c087add8907752320b309934abcc354d21626de8115c79df49d9c214edc"
+        nvda_no_quote = "0x95312f02c1dae8407b2c80468a5657a9bd19c45ac277f1a61aa52c11444c5314"
+        usde = "0xc845da65a020ddca5f132efa8fea79676d8edfdea504226a4c01e7a9e34cddd6"
+        googl = "0x7408b08b03e05ffd2d21c797489a0e77a28e4bb36acb4e827c69e805d06272b4"
 
         self.assertEqual(get_market_risk_level(spy, Chain.ROBINHOOD), 2)
+        self.assertEqual(get_market_risk_level(spy_77, Chain.ROBINHOOD), 3)
         self.assertEqual(get_market_risk_level(nvda, Chain.ROBINHOOD), 3)
+        self.assertEqual(get_market_risk_level(nvda_no_quote, Chain.ROBINHOOD), 3)
+        self.assertEqual(get_market_risk_level(usde, Chain.ROBINHOOD), 2)
+        self.assertEqual(get_market_risk_level(googl, Chain.ROBINHOOD), 4)
 
 
 class TestMorphoUrls(unittest.TestCase):

@@ -153,6 +153,7 @@ MARKETS_RISK_2 = {
     ],
     Chain.ROBINHOOD: [
         "0x50bc39b5722fb5634c436d74c6787f3c125b879e7b73cf9e9ecc01bbb57b8e55",  # SPY/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink RHSPY/USD and Chainlink USDG/USD. Broad index ETF; equity feeds only move in trading hours, so weekend gaps are absorbed by the low LLTV.
+        "0xc845da65a020ddca5f132efa8fea79676d8edfdea504226a4c01e7a9e34cddd6",  # USDe/USDG -> lltv 91.5%, oracle: MetaOracleDeviationTimelock (Steakhouse) — primary MorphoChainlinkOracleV2 fixed 1 USDe = 1 USDG (no feeds); backup MorphoChainlinkOracleV2 Chainlink USDE/USD, no quote feed (USDG = $1). Deviation 0.5%, challenge timelock 16h, healing 24h. Same-value stables.
     ],
 }
 
@@ -199,7 +200,12 @@ MARKETS_RISK_3 = {
     Chain.ROBINHOOD: [
         "0x69400cfe81f2ae381b9a9f27076a4d637338379d999e9ffdfbde52f0876312ee",  # META/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink Robinhood META/USD and Chainlink USDG/USD. Single stock, gap risk outside trading hours.
         "0x66306c087add8907752320b309934abcc354d21626de8115c79df49d9c214edc",  # NVDA/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink RHNVDA/USD and Chainlink USDG/USD. Single stock, gap risk outside trading hours.
+        "0x95312f02c1dae8407b2c80468a5657a9bd19c45ac277f1a61aa52c11444c5314",  # NVDA/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink RHNVDA/USD (different proxy than the USDG-quoted NVDA market); no quote feed (USDG = $1). Single stock, gap risk outside trading hours.
         "0x21ea2a012b888120e328775c2a7bf6fb4619cf4c4c631ad1c9b6db51f8882d5a",  # SPCX/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink Robinhood SPCX/USD and Chainlink USDG/USD. Single stock, gap risk outside trading hours.
+        "0x10151e2ac82a820153520d9d77d56de1c84775e23b79bdc11e2e34282d9afa10",  # SPCX/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — same Chainlink Robinhood SPCX/USD feed as the USDG-quoted market; no quote feed (USDG = $1). Single stock, gap risk outside trading hours.
+        "0xe29c7d3790037800101ecbad9c45de2067698d206cbcab7c25069a9f43c9eb98",  # TSLA/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink RHTSLA/USD; no quote feed (USDG = $1). Single stock, gap risk outside trading hours.
+        "0x947ae981cc823024ea00b602f6ea72d049cac05d66ef096198ceeb998651c175",  # AAPL/USDG -> lltv 62.5%, oracle: MorphoChainlinkOracleV2 — Chainlink Robinhood AAPL/USD; no quote feed (USDG = $1). Single stock, gap risk outside trading hours.
+        "0xeb1739b2a69dd22a4285d366a06698a01018b37c24d2994fefe19cc72f313613",  # SPY/USDG -> lltv 77%, oracle: MorphoChainlinkOracleV2 — Chainlink RHSPY/USD; no quote feed (USDG = $1). Same SPY feed as the 62.5% market, but higher LLTV, so weekend gaps are not absorbed the same way.
     ],
 }
 
@@ -228,6 +234,9 @@ MARKETS_RISK_4 = {
         "0xff0f2bd52ca786a4f8149f96622885e880222d8bed12bbbf5950296be8d03f89",  # USR/USDC -> lltv 91.5%, oracle: pyth USR/USD and pyth USDC/USD
     ],
     Chain.KATANA: [],
+    Chain.ROBINHOOD: [
+        "0x7408b08b03e05ffd2d21c797489a0e77a28e4bb36acb4e827c69e805d06272b4",  # GOOGL/USDG -> lltv 77%, oracle: MorphoChainlinkOracleV2 — Chainlink Robinhood GOOGL/USD; no quote feed (USDG = $1). Single stock at a higher LLTV; the equity feed is stale outside trading hours, so a gap can clear the 23% buffer before the oracle moves.
+    ],
 }
 
 MARKETS_RISK_5 = {
