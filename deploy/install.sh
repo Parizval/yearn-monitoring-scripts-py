@@ -204,6 +204,7 @@ sed -e "s|__MONITOR_USER__|${TARGET_USER}|g" \
     -e "s|__REPO_DIR__|${REPO_DIR}|g" \
     -e "s|__ETC_DIR__|${ETC_DIR}|g" \
     -e "s|__CACHE_DIR__|${CACHE_DIR}|g" \
+    -e "s|__HOME_DIR__|${TARGET_HOME}|g" \
   "${REPO_DIR}/deploy/systemd/monitoring.service" \
   > /etc/systemd/system/monitoring.service
 chmod 0644 /etc/systemd/system/monitoring.service

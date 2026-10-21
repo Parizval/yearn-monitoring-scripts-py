@@ -30,9 +30,11 @@ WorkingDirectory=__REPO_DIR__
 # automation.config reads REPO_ROOT to locate jobs.yaml and to set each task's
 # subprocess cwd. PATH puts the project venv first so `python` in the rendered
 # crontab resolves to .venv/bin/python; flock (util-linux) and supercronic live
-# in the system paths after it.
+# in the system paths after it. ~/.local/bin is where the Codex and Claude Code CLIs
+# install; utils/llm/factory.py finds them with shutil.which and tries them before
+# the API provider (LLM_CLI_PROVIDERS, default "codex,claude").
 Environment=REPO_ROOT=__REPO_DIR__
-Environment=PATH=__REPO_DIR__/.venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=__REPO_DIR__/.venv/bin:__HOME_DIR__/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=LOG_LEVEL=INFO
 Environment=PYTHONUNBUFFERED=1
 # Single knob for all on-disk cache/dedupe state. utils.cache.cache_path()
@@ -82,13 +84,17 @@ StartLimitBurst=5
 # which writes .git/ and the working tree); ProtectSystem=strict would otherwise
 # make it read-only and fail the sync. The same sync then runs `uv sync --frozen`,
 # which rewrites __REPO_DIR__/.venv; uv's cache and managed Pythons go under
-# __CACHE_DIR__/uv since ProtectHome keeps ~ read-only. The rest of the system
-# stays read-only.
+# __CACHE_DIR__/uv since ProtectHome keeps ~ read-only. The LLM CLIs write their
+# session and auth-token state under ~ (~/.codex; ~/.claude and ~/.claude.json), so
+# those are writable too. The leading "-" skips a path that doesn't exist, so hosts
+# without the CLIs still start; the CLIs are then just skipped. The rest of the
+# system stays read-only.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=__CACHE_DIR__ __REPO_DIR__
+ReadWritePaths=-__HOME_DIR__/.codex -__HOME_DIR__/.claude -__HOME_DIR__/.claude.json
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
