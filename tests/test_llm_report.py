@@ -469,10 +469,29 @@ class TestBuildReport(unittest.TestCase):
         )
         self.assertIn("- **Chain:** Mainnet (chain id 1)", report)
         self.assertIn("- **Risk:** HIGH", report)
+        self.assertNotIn("**Model:**", report)
+        self.assertNotIn("**Time:**", report)
 
     def test_contract_unlinked_without_label_address(self) -> None:
         report = build_report("Summary.", "Analysis.", _add_farms_ctx())
         self.assertIn("- **Contract:** Infinifi Shorttimelock\n", report)
+
+    def test_model_metadata_is_plain_text(self) -> None:
+        report = build_report(
+            "Summary.",
+            "Analysis.",
+            _add_farms_ctx(),
+            model_names=("model_[link](https://example.com)<b>*`\\\n- injected",),
+        )
+        self.assertIn(
+            r"- **Model:** model\_\[link\](https://example.com)&lt;b&gt;\*\`\\ - injected",
+            report,
+        )
+        self.assertNotIn("\n- injected", report)
+
+    def test_zero_generation_time_is_shown(self) -> None:
+        report = build_report("Summary.", "Analysis.", _add_farms_ctx(), elapsed_s=0)
+        self.assertIn("- **Time:** 0.0s", report)
 
     def test_contract_unlinked_on_chain_without_explorer(self) -> None:
         ctx = _add_farms_ctx(chain_id=999999, label_address=TIMELOCK)
